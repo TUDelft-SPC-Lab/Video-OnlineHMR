@@ -17,47 +17,38 @@
     git clone --recursive https://github.com/Tsukasane/Video-OnlineHMR.git
     ```
 
-2. Creating a new anaconda environment.
+2. Create the environment with [uv](https://docs.astral.sh/uv/).
     ```Bash
-    # Base environment installation
-    conda create -n onlinehmr python=3.11.5 cmake
-    conda activate onlinehmr
-    
-    # if run on cluster, first decide which pair of CUDA and gcc to use, for example:
-    module spider cuda-toolkit
-    module load cuda/12.4.0
-    module spider gcc
-    module load gcc/13.2.1-p20240113
-
-    # then install the corresponding torch...
-    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-    pip install --no-build-isolation git+https://github.com/mattloper/chumpy.git
-    pip install -r requirements.txt
-    cd thirdparty
-
-    # MASt3R-SLAM installation
-    cd MASt3R-SLAM/
     git submodule update --init --recursive
-    pip install --no-build-isolation -e thirdparty/mast3r
-    pip install thirdparty/in3d
-    pip install --no-build-isolation -e .
-    pip install torchcodec==0.1
+    cd thirdparty/MASt3R-SLAM && git submodule update --init --recursive && cd ../..
 
-    # Detectron2 installation
-    pip install --no-build-isolation 'git+https://github.com/facebookresearch/detectron2.git@a59f05630a8f205756064244bf5beb8661f96180'
+    # Load CUDA and set the GPU architectures to compile for (A40 = 8.6, L40 = 8.9)
+    module load cuda/12.9
+    export TORCH_CUDA_ARCH_LIST="8.6;8.9"
+    export MAX_JOBS=$(nproc)   # speeds up the CUDA builds
 
-    # pytorch3d installation
-    pip install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git@stable"
-
-    # MoGe installation
-    pip install git+https://github.com/microsoft/MoGe.git
-
-    # DEVA installation
-    cd ../Tracking-Anything-with-DEVA
-    pip install -e .
-
-    cd ../..
+    uv sync
     ```
+
+    **Optional: building on a node without a GPU.** MASt3R-SLAM's `setup.py` only compiles its CUDA backend when torch can see a GPU; otherwise it fails with `NameError: name 'ext_modules' is not defined`. Patch it to honour `FORCE_CUDA` and set the variable before `uv sync`:
+    ```Bash
+    sed -i 's/^has_cuda = torch.cuda.is_available()$/has_cuda = torch.cuda.is_available() or os.environ.get("FORCE_CUDA") == "1"/' thirdparty/MASt3R-SLAM/setup.py
+    export FORCE_CUDA=1
+    ```
+    This `setup.py` has its own hardcoded `-gencode` list (sm_60 to sm_90) and ignores `TORCH_CUDA_ARCH_LIST`; the sm_86 code also runs on the L40.
+
+    Notes:
+    * Load CUDA and set `TORCH_CUDA_ARCH_LIST` in every shell where you run `uv add` or `uv sync`. Without it, the build fails on nodes with no visible GPU (`IndexError` in `_get_cuda_arch_flags`).
+    * The RTX PRO 6000 Blackwell nodes (sm_120) are not supported: torch 2.5.1 has no kernels for them.
+    * MoGe is pinned to commit `b942f00` (Oct 2025), the last MoGe-2 release. MoGe main is now V3, which needs `trimesh>=4.11` and conflicts with the `trimesh==4.8.2` pin. The repo only uses `moge.model.v2`.
+    * With 8 threads, MASt3R-SLAM takes about 14 min to build, detectron2 about 4 min and pytorch3d about 22 min.
+
+    **FFmpeg for torchcodec (runtime).** torchcodec needs the FFmpeg shared libraries at runtime. Without them, `import torchcodec` fails with `Could not load libtorchcodec`, and MASt3R-SLAM falls back to a slower video loader. Load the cluster FFmpeg module and its dependencies, in this order:
+    ```Bash
+    module load 2026 cpu libiconv/1.18 bzip2/1.0.8
+    module load visual ffmpeg/7.1
+    ```
+    This FFmpeg build targets `x86_64_v4` (AVX-512), so the job must run on an AVX-512 node.
 
 3. Prepare data and models
     
