@@ -1,7 +1,6 @@
 import os
 import torch
 from yacs.config import CfgNode as CN
-from .hmr_vimo import HMR_VIMO
 
 
 def get_default_config():
@@ -17,6 +16,9 @@ def get_default_config():
 
 
 def get_hmr_vimo(checkpoint=None, device='cuda'):
+    # Imported here so that lib.models.smpl can be used without the inference dependencies
+    from .hmr_vimo import HMR_VIMO
+
     cfg = get_default_config()
     cfg.device = device
     model = HMR_VIMO(cfg)
