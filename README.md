@@ -98,15 +98,19 @@
 * Reset ``ROOT`` and ``DATASET_NPZ_PATH`` in ``./data_config.py`` to your own folders.
 
 ## Run demo on videos
+Run these on a GPU node (A40 or L40), with the FFmpeg modules from step 2 loaded. `--no-sync` keeps uv from rebuilding the CUDA extensions.
 ```bash
+module load 2026 cpu libiconv/1.18 bzip2/1.0.8
+module load visual ffmpeg/7.1
+
 # download examples
-gdown --folder https://drive.google.com/drive/folders/17oVcqoa0xUSs35fSfUTvCOqMjKrfo8_O?usp=sharing
+uv run --no-sync gdown --folder https://drive.google.com/drive/folders/17oVcqoa0xUSs35fSfUTvCOqMjKrfo8_O?usp=sharing
 
 # inference
-python ./scripts/run_custom.py --video <YOUR/VIDEO/PATH>.mp4 --no-viz --calib false --depth-mask
+uv run --no-sync python ./scripts/run_custom.py --video <YOUR/VIDEO/PATH>.mp4 --no-viz --calib false --depth-mask
 
 # inference w tracking (multipersons)
-python ./scripts/run_custom_mt.py --video <YOUR/VIDEO/PATH>.mp4 --no-viz --calib false --depth-mask
+uv run --no-sync python ./scripts/run_custom_mt.py --video <YOUR/VIDEO/PATH>.mp4 --no-viz --calib false --depth-mask
 ```
 Results are saved to
 * ``./res_human_camera/global_results`` (global optimized scene).
@@ -114,13 +118,13 @@ Results are saved to
 * ``./logs/*_images_incremental_all.txt`` (incremental camera extrinsics).
 ```bash
 # visualization
-python visualize_viser.py --human_npz_path <HUMAN/NPZ/PATH>.npz --camera_path <CAMERA/TXT/PATH>.txt
+uv run --no-sync python visualize_viser.py --human_npz_path <HUMAN/NPZ/PATH>.npz --camera_path <CAMERA/TXT/PATH>.txt
 ```
 You can also use scripts under ``vis_tools/`` to check visualization in ``.gif`` format.
 
 The projected result on image can be visualized by 
 ```bash
-python scripts/visualize_smpl_projection.py \
+uv run --no-sync python scripts/visualize_smpl_projection.py \
         --image_dir results/<videoName>/images \
         --camera_txt logs/<videoName>_images_incremental_all.txt \
         --smpl_npz res_human_camera/<personID>_<videoName>.npz \
