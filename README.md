@@ -134,6 +134,12 @@ Results are saved to
 * ``./res_human_camera/global_results`` (global optimized scene).
 * ``./res_human_camera/{trackID}_{videoName}*.npz`` (camera coordinate human motion).
 * ``./logs/*_images_incremental_all.txt`` (incremental camera extrinsics).
+
+**Before re-running a video, delete its previous outputs.** The camera trajectories in ``./logs/<videoName>_images_incremental_{all,kf}.txt`` are appended to, never overwritten, so a second run adds its poses after the first and the visualization no longer lines up. Track files from an earlier run with different track IDs would also be left behind in ``./res_human_camera/``:
+```bash
+rm -f logs/<videoName>_images_incremental_*.txt res_human_camera/*<videoName>.npz
+```
+
 To only visualize results (e.g. on a laptop without a GPU), install just the `viz` group instead of the full environment. It skips all the CUDA builds, but the submodules from step 1 must still be checked out, and the SMPL files must be in `data/smpl` (copy them over or download only the ones the visualization needs):
 ```bash
 uv sync --only-group viz
