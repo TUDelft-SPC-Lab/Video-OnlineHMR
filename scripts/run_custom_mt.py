@@ -385,7 +385,7 @@ def process_mask_soft_margin(mask, method='gaussian', kernel_size=15, sigma=5.0,
 
 
 if __name__=='__main__':
-    mp.set_start_method("spawn")
+    mp.set_start_method("spawn", force=True)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.set_grad_enabled(False)
     device = "cuda:0"
@@ -1258,7 +1258,6 @@ if __name__=='__main__':
                                    box_width < img_w * 2 and box_height < img_h * 2)  # Reasonable size check
                 
                 if not is_valid_box:
-                    breakpoint()
                     print(f"Warning: Skipping invalid box for person {pk} at frame {i}: {box_ck}")
                     continue
                 
