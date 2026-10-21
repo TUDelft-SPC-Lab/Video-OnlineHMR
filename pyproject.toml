@@ -61,6 +61,20 @@ dependencies = [
     "yacs==0.1.8",
 ]
 
+[dependency-groups]
+# Only what visualize_viser.py and scripts/visualize_smpl_projection.py need: uv sync --only-group viz
+viz = [
+    "chumpy",
+    "gdown>=6.4.2",
+    "numpy",
+    "opencv-python>=4.11.0.86",
+    "smplx==0.1.28",
+    "torch==2.5.1",
+    "tqdm==4.67.1",
+    "viser>=1.1.1",
+    "yacs==0.1.8",
+]
+
 [tool.uv.sources]
 chumpy = { git = "https://github.com/mattloper/chumpy.git" }
 mast3r = { workspace = true, editable = true }

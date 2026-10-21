@@ -5169,6 +5169,19 @@ dependencies = [
     { name = "yacs" },
 ]
 
+[package.dev-dependencies]
+viz = [
+    { name = "chumpy" },
+    { name = "gdown" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "smplx" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "viser" },
+    { name = "yacs" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "asmk", directory = "thirdparty/MASt3R-SLAM/thirdparty/mast3r/asmk" },
@@ -5223,6 +5236,19 @@ requires-dist = [
     { name = "torchvision", specifier = "==0.20.1" },
     { name = "tqdm", specifier = "==4.67.1" },
     { name = "trimesh", specifier = "==4.8.2" },
+    { name = "viser", specifier = ">=1.1.1" },
+    { name = "yacs", specifier = "==0.1.8" },
+]
+
+[package.metadata.requires-dev]
+viz = [
+    { name = "chumpy", git = "https://github.com/mattloper/chumpy.git" },
+    { name = "gdown", specifier = ">=6.4.2" },
+    { name = "numpy" },
+    { name = "opencv-python", specifier = ">=4.11.0.86" },
+    { name = "smplx", specifier = "==0.1.28" },
+    { name = "torch", specifier = "==2.5.1" },
+    { name = "tqdm", specifier = "==4.67.1" },
     { name = "viser", specifier = ">=1.1.1" },
     { name = "yacs", specifier = "==0.1.8" },
 ]

@@ -134,6 +134,11 @@ Results are saved to
 * ``./res_human_camera/global_results`` (global optimized scene).
 * ``./res_human_camera/{trackID}_{videoName}*.npz`` (camera coordinate human motion).
 * ``./logs/*_images_incremental_all.txt`` (incremental camera extrinsics).
+To only visualize results (e.g. on a laptop without a GPU), install just the `viz` group instead of the full environment. It skips all the CUDA builds, but the submodules from step 1 must still be checked out, and the SMPL files must be in `data/smpl` (copy them over or download only the ones the visualization needs):
+```bash
+uv sync --only-group viz
+uv run --no-sync bash scripts/download_viz_models.sh
+```
 ```bash
 # visualization
 uv run --no-sync python visualize_viser.py --human_npz_path <HUMAN/NPZ/PATH>.npz --camera_path <CAMERA/TXT/PATH>.txt
