@@ -13,3 +13,4 @@ logs/
 pytorch3d/
 checkpoints/
 res_human_camera/
+vis_smpl_projection/
