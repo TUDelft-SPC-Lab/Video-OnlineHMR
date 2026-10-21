@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lib.models.smpl import SMPL
 from lib.utils.geometry import perspective_projection
-from pytorch3d.transforms import quaternion_to_matrix
 
 
 def quaternion_to_rotation_matrix(q):

@@ -4,7 +4,6 @@ import time
 from typing import Any, Optional
 
 import numpy as np
-import open3d as o3d
 import torch
 
 from lib.models.smpl import SMPL
@@ -16,6 +15,17 @@ SMPL_FACES: Optional[np.ndarray] = None
 faces_attr = getattr(SMPL_MODEL, "faces", None)
 if faces_attr is not None:
     SMPL_FACES = np.asarray(faces_attr, dtype=np.int32)
+
+
+def quaternion_to_rotation_matrix(qw: float, qx: float, qy: float, qz: float) -> np.ndarray:
+    """Convert a quaternion (w, x, y, z) to a 3x3 rotation matrix."""
+    norm = np.sqrt(qw**2 + qx**2 + qy**2 + qz**2)
+    qw, qx, qy, qz = qw / norm, qx / norm, qy / norm, qz / norm
+    return np.array([
+        [1 - 2 * (qy**2 + qz**2), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+        [2 * (qx * qy + qz * qw), 1 - 2 * (qx**2 + qz**2), 2 * (qy * qz - qx * qw)],
+        [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx**2 + qy**2)],
+    ])
 
 
 def read_camera_poses(txt_file: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -32,7 +42,7 @@ def read_camera_poses(txt_file: str) -> tuple[np.ndarray, np.ndarray, np.ndarray
                 continue
             _, tx, ty, tz, qx, qy, qz, qw = vals[:8]
 
-            R = o3d.geometry.get_rotation_matrix_from_quaternion([qw, qx, qy, qz])
+            R = quaternion_to_rotation_matrix(qw, qx, qy, qz)
             t = np.array([tx, ty, tz], dtype=float)
             q = np.array([qx, qy, qz, qw], dtype=float)
 
