@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11.5"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'darwin'",
@@ -21,6 +21,40 @@ members = [
     "mast3r-slam",
     "video-onlinehmr",
 ]
+
+[[manifest.dependency-metadata]]
+name = "chumpy"
+version = "0.71"
+requires-dist = ["numpy>=1.8.1", "scipy>=0.13.0", "six>=1.11.0"]
+
+[[manifest.dependency-metadata]]
+name = "curope"
+version = "0.0.0"
+
+[[manifest.dependency-metadata]]
+name = "detectron2"
+version = "0.6"
+requires-dist = ["pillow>=7.1", "matplotlib", "pycocotools>=2.0.2", "termcolor>=1.1", "yacs>=0.1.8", "tabulate", "cloudpickle", "tqdm>4.29.0", "tensorboard", "fvcore>=0.1.5,<0.1.6", "iopath>=0.1.7,<0.1.10", "omegaconf>=2.1,<2.4", "hydra-core>=1.1", "black", "packaging"]
+
+[[manifest.dependency-metadata]]
+name = "in3d"
+version = "0.0.1"
+requires-dist = ["imgui", "moderngl==5.12.0", "moderngl-window==2.4.6", "glfw", "pyglm", "msgpack", "numpy", "matplotlib", "trimesh[easy]"]
+
+[[manifest.dependency-metadata]]
+name = "lietorch"
+version = "0.3"
+requires-dist = ["numpy", "torch"]
+
+[[manifest.dependency-metadata]]
+name = "mast3r"
+version = "0.0.1"
+requires-dist = ["scikit-learn", "roma", "gradio", "matplotlib", "tqdm", "opencv-python", "scipy", "einops", "trimesh", "tensorboard", "pyglet", "huggingface-hub[torch]>=0.22", "curope", "asmk"]
+
+[[manifest.dependency-metadata]]
+name = "pytorch3d"
+version = "0.7.8"
+requires-dist = ["iopath"]
 
 [[package]]
 name = "absl-py"
@@ -191,7 +225,7 @@ wheels = [
 [[package]]
 name = "asmk"
 version = "0.1"
-source = { directory = "/tudelft.net/staff-homes-linux/d/edortaperez/Video-OnlineHMR/thirdparty/MASt3R-SLAM/thirdparty/mast3r/asmk" }
+source = { directory = "thirdparty/MASt3R-SLAM/thirdparty/mast3r/asmk" }
 dependencies = [
     { name = "faiss-cpu" },
     { name = "numpy" },
@@ -679,6 +713,7 @@ name = "chumpy"
 version = "0.71"
 source = { git = "https://github.com/mattloper/chumpy.git#580566eafc9ac68b2614b64d6f7aaa84eebb70da" }
 dependencies = [
+    { name = "numpy" },
     { name = "scipy" },
     { name = "six" },
 ]
@@ -827,7 +862,7 @@ name = "cpsat-logutils"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pydantic" },
+    { name = "pydantic", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f8/42/2c2c14746ce87ff2932c8e086efbcc264e05664f29e36934f176c4c8ca19/cpsat_logutils-1.0.0.tar.gz", hash = "sha256:db8e0b5bf16fae203e08692088e9f8a248846e03934242367f7da5dab10322ee", size = 200951, upload-time = "2026-09-06T16:09:15.3Z" }
 wheels = [
@@ -837,7 +872,7 @@ wheels = [
 [[package]]
 name = "curope"
 version = "0.0.0"
-source = { directory = "/tudelft.net/staff-homes-linux/d/edortaperez/Video-OnlineHMR/thirdparty/MASt3R-SLAM/thirdparty/mast3r/dust3r/croco/models/curope" }
+source = { directory = "thirdparty/MASt3R-SLAM/thirdparty/mast3r/dust3r/croco/models/curope" }
 
 [[package]]
 name = "cycler"
@@ -958,7 +993,7 @@ name = "embreex"
 version = "4.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy" },
+    { name = "numpy", marker = "platform_machine != 'aarch64' or sys_platform != 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4c/0c/1bcdcb8cb09713d40c3cc6d303a4e456113df859dacb28a1b7af8a19a718/embreex-4.4.0-cp311-cp311-macosx_13_0_x86_64.whl", hash = "sha256:96a187753f578cb685051f8fd679dc7986f887fcb922bb81a9924f5b89e941d8", size = 13214875, upload-time = "2026-04-22T19:46:43.439Z" },
@@ -1680,7 +1715,7 @@ wheels = [
 [[package]]
 name = "imgui"
 version = "2.0.0"
-source = { directory = "/tudelft.net/staff-homes-linux/d/edortaperez/Video-OnlineHMR/thirdparty/MASt3R-SLAM/thirdparty/in3d/thirdparty/pyimgui" }
+source = { directory = "thirdparty/MASt3R-SLAM/thirdparty/in3d/thirdparty/pyimgui" }
 
 [package.metadata]
 requires-dist = [
@@ -1740,7 +1775,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "glfw" },
-    { name = "imgui", directory = "/tudelft.net/staff-homes-linux/d/edortaperez/Video-OnlineHMR/thirdparty/MASt3R-SLAM/thirdparty/in3d/thirdparty/pyimgui" },
+    { name = "imgui" },
     { name = "matplotlib" },
     { name = "moderngl", specifier = "==5.12.0" },
     { name = "moderngl-window", specifier = "==2.4.6" },
@@ -2418,8 +2453,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asmk", directory = "/tudelft.net/staff-homes-linux/d/edortaperez/Video-OnlineHMR/thirdparty/MASt3R-SLAM/thirdparty/mast3r/asmk" },
-    { name = "curope", directory = "/tudelft.net/staff-homes-linux/d/edortaperez/Video-OnlineHMR/thirdparty/MASt3R-SLAM/thirdparty/mast3r/dust3r/croco/models/curope" },
+    { name = "asmk" },
+    { name = "curope" },
     { name = "einops" },
     { name = "gradio" },
     { name = "huggingface-hub", extras = ["torch"], specifier = ">=0.22" },
@@ -3002,7 +3037,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.1.0.70"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9f/fd/713452cd72343f682b1c7b9321e23829f00b842ceaedcda96e742ea0b0b3/nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl", hash = "sha256:165764f44ef8c61fcdfdfdbe769d687e06374059fbb388b6c89ecb0e28793a6f", size = 664752741, upload-time = "2024-04-22T15:24:15.253Z" },
@@ -3012,6 +3047,9 @@ wheels = [
 name = "nvidia-cufft-cu12"
 version = "11.2.1.3"
 source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/27/94/3266821f65b92b3138631e9c8e7fe1fb513804ac934485a8d05776e1dd43/nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_x86_64.whl", hash = "sha256:f083fc24912aa410be21fa16d157fed2055dab1cc4b6934a0e03cba69eb242b9", size = 211459117, upload-time = "2024-04-03T20:57:40.402Z" },
 ]
@@ -3029,9 +3067,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.6.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cusparse-cu12" },
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "nvidia-cusparse-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3a/e1/5b9089a4b2a4790dfdea8b3a006052cfecff58139d5a4e34cb1a51df8d6f/nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_x86_64.whl", hash = "sha256:19e33fa442bcfd085b3086c4ebf7e8debc07cfe01e11513cc6d332fd918ac260", size = 127936057, upload-time = "2024-04-03T20:58:28.735Z" },
@@ -3042,7 +3080,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.3.1.170"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/db/f7/97a9ea26ed4bbbfc2d470994b8b4f338ef663be97b8f677519ac195e113d/nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_x86_64.whl", hash = "sha256:ea4f11a2904e2a8dc4b1833cc1b5181cde564edd0d5cd33e3c168eff2d1863f1", size = 207454763, upload-time = "2024-04-03T20:58:59.995Z" },
@@ -3204,7 +3242,7 @@ name = "orloge"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cpsat-logutils" },
+    { name = "cpsat-logutils", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e6/6a/5496be734109def41e692abd2ad2fd975d9d2633dbab6fecc889307f4908/orloge-1.0.0.tar.gz", hash = "sha256:6c0bf7d2867fe22e60ef6425d7e99599938c0b1611d513a0baf972fa91b71c88", size = 20976, upload-time = "2026-09-17T07:58:22.891Z" }
 wheels = [
@@ -3454,7 +3492,7 @@ resolution-markers = [
     "(python_full_version == '3.12.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.12.*' and sys_platform != 'darwin' and sys_platform != 'linux')",
 ]
 dependencies = [
-    { name = "orloge" },
+    { name = "orloge", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6c/96/a303e7e43c66402fed1d401615eae48eda2fe5bb9da62f28c55b108b7041/pulp-4.0.1.tar.gz", hash = "sha256:976f1184a69ab2aceb12e7c14e375775f184bddb8e66ee611ebaccbcad537f8c", size = 165276, upload-time = "2026-10-14T08:08:22.608Z" }
 wheels = [
@@ -4910,7 +4948,7 @@ name = "triton"
 version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "filelock" },
+    { name = "filelock", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.13' and sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/86/17/d9a5cf4fcf46291856d1e90762e36cbabd2a56c7265da0d1d9508c8e3943/triton-3.1.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0f34f6e7885d1bf0eaaf7ba875a5f0ce6f3c13ba98f9503651c1e6dc6757ed5c", size = 209506424, upload-time = "2024-10-14T16:05:42.337Z" },
@@ -5075,12 +5113,15 @@ name = "video-onlinehmr"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "asmk" },
     { name = "chumpy" },
+    { name = "curope" },
     { name = "detectron2" },
     { name = "deva" },
     { name = "gdown" },
     { name = "glfw" },
     { name = "hydra-core" },
+    { name = "imgui" },
     { name = "in3d" },
     { name = "iopath" },
     { name = "loguru" },
@@ -5130,12 +5171,15 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "asmk", directory = "thirdparty/MASt3R-SLAM/thirdparty/mast3r/asmk" },
     { name = "chumpy", git = "https://github.com/mattloper/chumpy.git" },
+    { name = "curope", directory = "thirdparty/MASt3R-SLAM/thirdparty/mast3r/dust3r/croco/models/curope" },
     { name = "detectron2", git = "https://github.com/facebookresearch/detectron2.git?rev=a59f05630a8f205756064244bf5beb8661f96180" },
     { name = "deva", editable = "thirdparty/Tracking-Anything-with-DEVA" },
     { name = "gdown", specifier = ">=6.4.2" },
     { name = "glfw", specifier = "==2.10.0" },
     { name = "hydra-core", specifier = "==1.3.2" },
+    { name = "imgui", directory = "thirdparty/MASt3R-SLAM/thirdparty/in3d/thirdparty/pyimgui" },
     { name = "in3d", editable = "thirdparty/MASt3R-SLAM/thirdparty/in3d" },
     { name = "iopath", specifier = "==0.1.9" },
     { name = "loguru", specifier = "==0.7.3" },
