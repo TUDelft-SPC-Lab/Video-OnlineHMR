@@ -64,6 +64,7 @@ def load_smpl_data(npz_path):
         'pred_rotmat': torch.from_numpy(data['pred_rotmat']),  # T, 24, 3, 3
         'pred_shape': torch.from_numpy(data['pred_shape']),     # T, 10
         'pred_trans': torch.from_numpy(data['pred_trans']),     # T, 1, 3 or T, 3
+        'frame_ids': data['frame_ids'] if 'frame_ids' in data else None,  # T, image index of each entry
     }
 
 
@@ -199,24 +200,40 @@ def main():
         img_center = np.array(args.camera_center)
         print(f"Using provided camera center: {img_center}")
     
+    # Tracks only cover the frames in frame_ids. Frame 0 initialises the SLAM and has no
+    # camera pose, so camera pose i belongs to frame i + 1.
+    frame_ids = smpl_data['frame_ids']
+    cam_offset = 1
+    if frame_ids is None:
+        frame_ids = np.arange(len(smpl_data['pred_rotmat']))
+        cam_offset = 0
+
     # Process frames
-    end_frame = args.end_frame if args.end_frame is not None else min(len(img_files), len(camera_extrinsics), len(smpl_data['pred_rotmat']))
-    
+    end_frame = args.end_frame if args.end_frame is not None else len(img_files)
+
     print(f"Processing frames {args.start_frame} to {end_frame-1}...")
-    
-    for frame_idx in tqdm(range(args.start_frame, end_frame)):
+
+    for smpl_idx, frame_idx in enumerate(tqdm(frame_ids)):
+        frame_idx = int(frame_idx)
+        if not args.start_frame <= frame_idx < end_frame:
+            continue
+
         # Load image
+        if frame_idx >= len(img_files):
+            print(f"Warning: No image for frame {frame_idx}")
+            continue
         img = cv2.imread(img_files[frame_idx])
         if img is None:
             print(f"Warning: Could not load image {img_files[frame_idx]}")
             continue
-        
+
         # Get camera extrinsics
-        if frame_idx >= len(camera_extrinsics):
+        cam_idx = frame_idx - cam_offset
+        if not 0 <= cam_idx < len(camera_extrinsics):
             print(f"Warning: No camera pose for frame {frame_idx}")
             continue
-        
-        cam_ext = camera_extrinsics[frame_idx]
+
+        cam_ext = camera_extrinsics[cam_idx]
 
         t_wc = cam_ext['translation']  # Camera position in world coordinates (T_WC translation)
         q_wc = cam_ext['quaternion']   # Camera orientation quaternion (T_WC rotation)
@@ -227,15 +244,11 @@ def main():
         R_wc = quaternion_to_rotation_matrix(q_wc)  # R_WC: rotation from world to camera frame
         
         # Get SMPL parameters for this frame
-        if frame_idx >= len(smpl_data['pred_rotmat']):
-            print(f"Warning: No SMPL data for frame {frame_idx}")
-            continue
-        
-        pred_rotmat = smpl_data['pred_rotmat'][frame_idx:frame_idx+1].to(device)  # (1, 24, 3, 3)
-        pred_shape = smpl_data['pred_shape'][frame_idx:frame_idx+1].to(device)   # (1, 10)
-        
+        pred_rotmat = smpl_data['pred_rotmat'][smpl_idx:smpl_idx+1].to(device)  # (1, 24, 3, 3)
+        pred_shape = smpl_data['pred_shape'][smpl_idx:smpl_idx+1].to(device)   # (1, 10)
+
         # Handle pred_trans shape
-        pred_trans = smpl_data['pred_trans'][frame_idx]
+        pred_trans = smpl_data['pred_trans'][smpl_idx]
         if pred_trans.ndim == 2 and pred_trans.shape[0] == 1:
             pred_trans = pred_trans.squeeze(0)  # (3,)
         pred_trans = pred_trans.unsqueeze(0).to(device)  # (1, 3)
