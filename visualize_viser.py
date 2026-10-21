@@ -87,6 +87,7 @@ def load_human_world_vertices(
             pred_rotmat = torch.from_numpy(data["pred_rotmat"]).float()
             pred_shape = torch.from_numpy(data["pred_shape"]).float()
             pred_trans = torch.from_numpy(data["pred_trans"]).float()
+            frame_ids = data["frame_ids"] if "frame_ids" in data else None
     except Exception as exc:
         print(f"Failed to load human predictions from {human_npz_path}: {exc}")
         return None, None
@@ -100,6 +101,14 @@ def load_human_world_vertices(
     pred_shape = mean_shape.expand(pred_rotmat.shape[0], -1).contiguous()
 
     num_frames = pred_rotmat.shape[0]
+
+    if frame_ids is not None and cam_R.shape[0] != num_frames:
+        # Frame 0 initialises the SLAM and has no pose, so camera pose i belongs to frame i + 1
+        cam_idx = torch.from_numpy(frame_ids).long() - 1
+        if cam_idx.min() < 0 or cam_idx.max() >= cam_R.shape[0]:
+            print(f"Frame ids {frame_ids.min()}-{frame_ids.max()} do not fit {cam_R.shape[0]} camera poses in {camera_txt_path}")
+            return None, None
+        cam_t, cam_R = cam_t[cam_idx], cam_R[cam_idx]
 
     with torch.no_grad():
         target_joints = 24
