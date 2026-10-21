@@ -77,4 +77,4 @@ members = [
 ]
 
 [tool.uv]
-no-build-isolation-package = ["chumpy", "curope", "mast3r", "mast3r-slam", "detectron2", "pytorch3d"]
+no-build-isolation-package = ["chumpy", "curope", "mast3r", "mast3r-slam", "detectron2", "pytorch3d", "lietorch"]
