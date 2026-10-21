@@ -1,0 +1,74 @@
+# Apptainer image with all OnlineHMR dependencies (torch 2.5.1 + CUDA extensions for A40/L40).
+# Models, data and code are NOT baked in: they are bind-mounted at runtime (see apptainer/run.sh).
+# Build with apptainer/build.sbatch.
+Bootstrap: docker
+From: nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+%files
+    pyproject.toml /opt/onlinehmr/
+    uv.lock /opt/onlinehmr/
+    .python-version /opt/onlinehmr/
+    README.md /opt/onlinehmr/
+    thirdparty /opt/onlinehmr/
+
+%environment
+    export VIRTUAL_ENV=/opt/venv
+    export PATH=/opt/venv/bin:$PATH
+    export TORCH_CUDA_ARCH_LIST="8.6;8.9"
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential git curl ca-certificates ninja-build pkg-config \
+        ffmpeg \
+        libgl1 libegl1 libglu1-mesa libosmesa6 libgl1-mesa-dri libglib2.0-0 \
+        libsm6 libxext6 libxrender1 libx11-6 libxrandr2 libxinerama1 libxcursor1 libxi6 \
+        libgomp1
+    rm -rf /var/lib/apt/lists/*
+
+    curl -LsSf https://astral.sh/uv/0.13.1/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+
+    export UV_PYTHON_INSTALL_DIR=/opt/python
+    export UV_PROJECT_ENVIRONMENT=/opt/venv
+    export UV_CACHE_DIR=/tmp/uv-cache
+    export UV_LINK_MODE=copy
+    export UV_COMPILE_BYTECODE=1
+    export TORCH_CUDA_ARCH_LIST="8.6;8.9"
+    export FORCE_CUDA=1
+    export MAX_JOBS=${MAX_JOBS:-$(nproc)}
+
+    cd /opt/onlinehmr
+    # Drop build artifacts copied from the host checkout so everything is rebuilt against the image.
+    find thirdparty -name "*.so" -delete
+    find thirdparty -type d \( -path "*/build/lib.*" -o -path "*/build/temp.*" -o -name "*.egg-info" \) -prune -exec rm -rf {} +
+    # Packages installed from local paths (curope, asmk, pyimgui) are pinned by absolute host path in the lock.
+    sed -i -E 's#"/[^"]*/(thirdparty/MASt3R-SLAM/thirdparty/)#"/opt/onlinehmr/\1#g' uv.lock
+    # No GPU at build time: make MASt3R-SLAM compile its CUDA backend anyway.
+    sed -i 's/^has_cuda = torch.cuda.is_available()$/has_cuda = torch.cuda.is_available() or os.environ.get("FORCE_CUDA") == "1"/' thirdparty/MASt3R-SLAM/setup.py
+
+    # Packages built without isolation need torch in the venv first.
+    uv sync --frozen \
+        --no-install-package chumpy --no-install-package curope \
+        --no-install-package mast3r --no-install-package mast3r-slam \
+        --no-install-package detectron2 --no-install-package pytorch3d \
+        --no-install-package lietorch
+    uv sync --frozen
+
+    # The scripts prepend ./thirdparty/MASt3R-SLAM (the bind-mounted repo) to sys.path, so the compiled
+    # backend must be importable from site-packages rather than only from the image's source tree.
+    PLATLIB=$(/opt/venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["platlib"])')
+    find thirdparty/MASt3R-SLAM -maxdepth 1 -name 'mast3r_slam_backends*.so' -exec cp {} "$PLATLIB"/ \;
+
+    cd /
+    /opt/venv/bin/python -c "import torch, detectron2, pytorch3d, mast3r_slam_backends, curope, moge; print('torch', torch.__version__, torch.version.cuda)"
+
+    rm -rf /tmp/uv-cache
+    chmod -R a+rX /opt
+
+%test
+    /opt/venv/bin/python -c "import torch, pytorch3d, detectron2, mast3r_slam_backends; print(torch.__version__)"
+
+%labels
+    Description OnlineHMR (Video-OnlineHMR) runtime, torch 2.5.1 / CUDA 12.4, sm_86 + sm_89

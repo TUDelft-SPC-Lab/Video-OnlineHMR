@@ -97,6 +97,24 @@
     ```
 * Reset ``ROOT`` and ``DATASET_NPZ_PATH`` in ``./data_config.py`` to your own folders.
 
+## Running with Apptainer (DAIC)
+Instead of a local `.venv`, you can use an Apptainer image that contains all dependencies (torch 2.5.1 / CUDA 12.4, CUDA extensions built for A40 and L40). Code, models, data and outputs are not in the image: the repo and the experiment folder are bind-mounted at runtime.
+
+The scripts use `EXP_DIR=/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR`. Edit `EXP_DIR` in `apptainer/build.sbatch` and `apptainer/run.sh` to use another location. `checkpoints`, `data`, `datasets`, `logs`, `results` and `res_human_camera` in the repo should be symlinks into `$EXP_DIR`. Model downloads at runtime (ViTDet-H, torch hub, Hugging Face) go to `$EXP_DIR/cache`.
+
+```bash
+# build the image (~10 min on 8 CPUs, no GPU needed); writes $EXP_DIR/onlinehmr.sif
+sbatch apptainer/build.sbatch
+
+# run a command as a batch job on an A40 (pass --gres=gpu:nvidia_l40:1 for an L40)
+sbatch apptainer/run.sbatch python scripts/run_custom_mt.py --video <YOUR/VIDEO/PATH>.mp4 --no-viz --calib false --depth-mask
+
+# or, inside an interactive A40/L40 allocation
+apptainer/run.sh python scripts/run_custom_mt.py --video <YOUR/VIDEO/PATH>.mp4 --no-viz --calib false --depth-mask
+apptainer/run.sh bash
+```
+The image has no kernels for the RTX PRO 6000 (Blackwell) nodes, so do not run it there. Edits to `scripts/`, `lib/`, MASt3R-SLAM's and DEVA's Python code take effect immediately, since the scripts load them from the mounted repo. Rebuild the image after changing `pyproject.toml`, `uv.lock`, other `thirdparty/` packages (e.g. mast3r) or any C++/CUDA sources. Any command in the sections below works inside the container by replacing `uv run --no-sync` with `apptainer/run.sh`. FFmpeg is included in the image, so no modules are needed.
+
 ## Run demo on videos
 Run these on a GPU node (A40 or L40), with the FFmpeg modules from step 2 loaded. `--no-sync` keeps uv from rebuilding the CUDA extensions.
 ```bash
