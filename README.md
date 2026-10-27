@@ -161,6 +161,43 @@ uv run --no-sync python scripts/visualize_smpl_projection.py \
         --draw_mesh
 ```
 
+## COSI-Lab (static fisheye cameras, known keypoints)
+`scripts/run_cosilab_smpl.py` runs only the OnlineHMR part on the COSI-Lab session videos. It uses
+the ViTPose boxes and track IDs and the fisheye calibration. It skips detection, DEVA tracking,
+MASt3R-SLAM and MoGe.
+
+Each person is cropped through a virtual pinhole camera pointed at them, and the result is rotated
+back into the real camera frame. If the camera has extrinsics, the result is also transformed into
+the session world frame (camera 06 for session 1, camera 01 for session 2). Camera 05 has no
+extrinsics, so its `world_*` outputs are NaN. `--refine` also fits SMPL to the ViTPose keypoints
+(SMPLify-style, initialised from OnlineHMR) and writes the fit next to the raw output.
+
+The Slurm array has one task per `camXX_batchYY` folder, 42 tasks in total. Each task takes about
+30–90 min on an A40, depending on the number of people, plus a similar amount with `--refine`:
+```bash
+sbatch --array=0 scripts/cosilab_smpl.sbatch --start 6000 --num_frames 600 --refine  # smoke test on cam01_batch01
+sbatch scripts/cosilab_smpl.sbatch            # all cam-batches
+sbatch scripts/cosilab_smpl.sbatch --refine   # with keypoint refinement
+```
+Each cam-batch is written to `$EXP_DIR/cosilab_smpl/<cam_batch>/`, and a re-run replaces its
+previous results:
+* `camera.json`: the calibration and the session frame offset.
+* `hmr/track_<id>.npz` and `refined/track_<id>.npz`: `frame_ids` (batch frames),
+  `session_frame_ids`, and `pred_rotmat`, `pred_shape` and `pred_trans` in the camera frame.
+  Also `world_rotmat_root` and `world_trans`, and the input `boxes` and `kp2d`.
+
+The rvec/tvec are read as OpenCV world→camera. Pass `--extrinsic_c2w` if the world view shows the
+cameras in the wrong places.
+
+The visualisations run on a machine without GPU with the `viz` group:
+```bash
+R=/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR/cosilab_smpl/cam01_batch01
+# meshes and joints projected on the fisheye video, with the ViTPose keypoints in white
+uv run --no-sync python scripts/visualize_cosilab_overlay.py --result_dir $R --which hmr --start 6000 --num_frames 300 --draw_mesh
+# 3D view of all tracks, with the session cameras and a floor grid
+uv run --no-sync python scripts/visualize_cosilab_viser.py --result_dir $R --which refined --all_cameras
+```
+
 ## Training
 ```Bash
 # Fine-tune a online camera coordinates HMR model based on HMR2.0
