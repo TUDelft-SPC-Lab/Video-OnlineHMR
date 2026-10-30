@@ -24,6 +24,10 @@ import viser.transforms as vtf
 from lib.models.smpl import SMPL
 from lib.utils import cosilab
 
+# Start view for session 2 in the world frame, copied from the viser client's URL parameters
+INITIAL_CAMERA = {'position': (0.311, 2.754, 1.765), 'look_at': (0.202, 1.331, 2.124),
+                  'up': (0.001, -0.117, -0.993), 'fov': 1.3090, 'near': 0.01, 'far': 1000.0}
+
 
 def rotation_between(a, b):
     """Rotation matrix taking unit vector a to unit vector b."""
@@ -91,6 +95,9 @@ def main():
 
     server = viser.ViserServer(port=args.port)
     server.scene.set_up_direction(tuple(up))
+    if world and camera['session'] == 2:
+        for name, value in INITIAL_CAMERA.items():
+            setattr(server.initial_camera, name, value)
     server.scene.add_grid('/floor', width=12, height=12, plane='xy',
                           wxyz=vtf.SO3.from_matrix(rotation_between(np.array([0., 0., 1.]), up)).wxyz,
                           position=floor_centre)
