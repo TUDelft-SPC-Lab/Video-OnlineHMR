@@ -35,6 +35,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--cam_batch', type=str, required=True, help='e.g. cam01_batch01')
     parser.add_argument('--data_root', type=str, default=cosilab.DATA_ROOT)
+    parser.add_argument('--keypoints_root', type=str, default=None,
+                        help='folder of <cam_batch>/vitpose_keypoints.json (default: the dataset ViTPose results)')
     parser.add_argument('--out_dir', type=str,
                         default='/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR/cosilab_smpl')
     parser.add_argument('--checkpoint', type=str, default='./results/onlinehmr/checkpoint.pth.tar')
@@ -213,7 +215,7 @@ def refine_track(args, smpl, cam_res, track, camera):
     kp2d = torch.tensor(track['kp2d'], dtype=torch.float32, device=device)
     boxes = torch.tensor(track['boxes'], dtype=torch.float32, device=device)
     box_size = torch.maximum(boxes[:, 2] - boxes[:, 0], boxes[:, 3] - boxes[:, 1]).clamp(min=1)
-    coco = torch.tensor(cosilab.COCO_TO_SPIN, device=device)
+    kp_to_spin = torch.tensor(cosilab.CONFLAB_TO_SPIN, device=device)
 
     rotmat = cam_res['pred_rotmat'].clone()
     shape = cam_res['pred_shape'].clone()
@@ -241,7 +243,7 @@ def refine_track(args, smpl, cam_res, track, camera):
                 R = rotation_6d_to_matrix(pose6d)
                 out = smpl(global_orient=R[:, :1], body_pose=R[:, 1:], betas=betas.expand(T, -1),
                            transl=transl, pose2rot=False)
-                j2d = fisheye.project_torch(out.joints[:, coco], K, D)
+                j2d = fisheye.project_torch(out.joints[:, kp_to_spin], K, D)
                 res = ((j2d - target) / box_size[s:e, None, None]).pow(2).sum(-1)
                 gmof = args.gmof_sigma**2 * res / (args.gmof_sigma**2 + res)
                 l_kp = (conf * gmof).sum() / conf.sum().clamp(min=1)
@@ -296,14 +298,15 @@ def main(args):
     if camera['R_w2c'] is None:
         print(f'[Warning] camera {args.cam:02d} has no extrinsics, world_* outputs are NaN')
     video = cosilab.video_path(args.data_root, args.cam)
-    tracks = cosilab.load_tracks(cosilab.keypoints_path(args.data_root, args.cam_batch))
+    args.keypoints_path = cosilab.keypoints_path(args.data_root, args.cam_batch, args.keypoints_root)
+    tracks = cosilab.load_tracks(args.keypoints_path)
 
     first = min(int(t['frames'].min()) for t in tracks.values())
     start = first if args.start is None else args.start
     end = np.inf if args.num_frames is None else start + args.num_frames
     tracks = prepare_tracks(tracks, start, end, args.min_track_len)
     print(f'{args.cam_batch}: {len(tracks)} tracks, {sum(len(t["frames"]) for t in tracks.values())} '
-          f'person-frames, video {video}', flush=True)
+          f'person-frames, keypoints {args.keypoints_path}, video {video}', flush=True)
 
     out_dir = os.path.join(args.out_dir, args.cam_batch)
     for sub in ['hmr', 'refined']:  # never mix tracks of different runs

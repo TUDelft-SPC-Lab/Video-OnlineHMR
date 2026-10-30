@@ -22,11 +22,11 @@ from lib.models.smpl import SMPL
 from lib.utils import cosilab, fisheye
 
 
-def draw_skeleton(img, kp, color, conf_thresh=None, radius=4, thickness=2):
-    """kp: (17, 2) or (17, 3) COCO keypoints."""
+def draw_skeleton(img, kp, color, skeleton, conf_thresh=None, radius=4, thickness=2):
+    """kp: (17, 2) or (17, 3) keypoints, skeleton: list of index pairs into them."""
     valid = np.ones(len(kp), dtype=bool) if conf_thresh is None else kp[:, 2] > conf_thresh
     pts = kp[:, :2].astype(int)
-    for a, b in cosilab.COCO_SKELETON:
+    for a, b in skeleton:
         if valid[a] and valid[b]:
             cv2.line(img, tuple(pts[a]), tuple(pts[b]), color, thickness, cv2.LINE_AA)
     for p, v in zip(pts, valid):
@@ -61,7 +61,7 @@ def main():
 
     smpl = SMPL()
     faces = np.asarray(smpl.faces, dtype=np.int64)
-    coco = cosilab.COCO_TO_SPIN
+    kp_to_spin, skeleton = cosilab.CONFLAB_TO_SPIN, cosilab.CONFLAB_SKELETON
 
     reader = cosilab.VideoReader(video, camera['session_frame_offset'] + start, args.num_frames)
     out_size = (int(reader.width * args.resize), int(reader.height * args.resize))
@@ -82,7 +82,7 @@ def main():
                 out = smpl(global_orient=rotmat[:, :1], body_pose=rotmat[:, 1:], betas=betas,
                            transl=transl, pose2rot=False)
                 verts2d = fisheye.project_torch(out.vertices, K, D).numpy()
-                joints2d = fisheye.project_torch(out.joints[:, coco], K, D).numpy()
+                joints2d = fisheye.project_torch(out.joints[:, kp_to_spin], K, D).numpy()
             depth = out.vertices[..., 2].numpy()
 
             if args.draw_mesh:
@@ -98,8 +98,9 @@ def main():
             for j, (pid, i) in enumerate(entries):
                 color = cosilab.track_color(pid)[::-1]
                 if not args.no_kp:
-                    draw_skeleton(img, tracks[pid]['kp2d'][i], (255, 255, 255), args.kp_conf, radius=3, thickness=1)
-                draw_skeleton(img, joints2d[j], color)
+                    draw_skeleton(img, tracks[pid]['kp2d'][i], (255, 255, 255), skeleton, args.kp_conf,
+                                  radius=3, thickness=1)
+                draw_skeleton(img, joints2d[j], color, skeleton)
                 x1, y1 = tracks[pid]['boxes'][i][:2].astype(int)
                 cv2.putText(img, str(pid), (x1, max(y1 - 8, 30)), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
 

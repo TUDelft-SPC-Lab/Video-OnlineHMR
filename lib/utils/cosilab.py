@@ -20,10 +20,13 @@ FPS = 60000 / 1001
 BATCH_FRAMES = 18000  # each batch is 5 min of the session video
 KP_SCALE = 2.0  # the ViTPose results are in 960x540, the videos are 1920x1080
 
-# COCO-17 keypoints -> indices into the 49 SPIN joints of lib.models.smpl.SMPL (OpenPose part)
-COCO_TO_SPIN = [0, 16, 15, 18, 17, 5, 2, 6, 3, 7, 4, 12, 9, 13, 10, 14, 11]
-COCO_SKELETON = [(0, 1), (0, 2), (1, 3), (2, 4), (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
-                 (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
+# The ViTPose results (dataset and scripts/run_cosilab_vitpose.py) use the ConfLab-17 layout, not COCO: head, nose,
+# neck, R/L shoulder-elbow-wrist, R/L hip-knee-ankle, R/L foot. Indices into the 49 SPIN joints of
+# lib.models.smpl.SMPL: head -> H36M head, feet -> big toes.
+CONFLAB_TO_SPIN = [43, 0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 22, 19]
+CONFLAB_SKELETON = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (2, 6), (6, 7), (7, 8), (3, 9), (6, 12), (9, 12),
+                    (9, 10), (10, 11), (11, 15), (12, 13), (13, 14), (14, 16)]
+CONFLAB_FLIP_PAIRS = [(3, 6), (4, 7), (5, 8), (9, 12), (10, 13), (11, 14), (15, 16)]
 
 
 def parse_cam_batch(cam_batch):
@@ -40,8 +43,10 @@ def session_frame(batch, key):
     return (batch - 1) * BATCH_FRAMES + key
 
 
-def keypoints_path(data_root, cam_batch):
-    return os.path.join(data_root, 'keypoints', 'vitpose_results', cam_batch, 'vitpose_keypoints.json')
+def keypoints_path(data_root, cam_batch, root=None):
+    """The dataset ViTPose results, or those under `root` (same <cam_batch>/vitpose_keypoints.json layout)."""
+    root = root or os.path.join(data_root, 'keypoints', 'vitpose_results')
+    return os.path.join(root, cam_batch, 'vitpose_keypoints.json')
 
 
 def video_path(data_root, cam):
