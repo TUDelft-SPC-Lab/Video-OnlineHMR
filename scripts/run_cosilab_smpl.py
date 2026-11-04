@@ -114,7 +114,7 @@ def run_hmr(hmr_model, state, device):
     state.crops, state.focals, state.rots = [], [], []
 
 
-def run_tracks(args, hmr_model, tracks, camera, video, start):
+def run_tracks(args, hmr_model, tracks, camera, start):
     """One sequential pass over the video, cropping every tracked person and running OnlineHMR."""
     device = args.device
     K = torch.tensor(camera['K'], dtype=torch.float32, device=device)
@@ -130,7 +130,7 @@ def run_tracks(args, hmr_model, tracks, camera, video, start):
         chunk_starts.update((pid, int(t['frames'][s])) for s, _ in t['chunks'])
 
     first, last = min(frame_index), max(frame_index)
-    reader = cosilab.VideoReader(video, cosilab.session_frame(args.batch, first), last - first + 1)
+    reader = cosilab.open_video(args.data_root, args.cam, cosilab.session_frame(args.batch, first), last - first + 1)
     states = {pid: TrackState() for pid in tracks}
 
     n_crops, t0 = 0, time.time()
@@ -308,7 +308,7 @@ def main(args):
     camera = cosilab.load_camera(args.data_root, args.cam, args.extrinsic_c2w)
     if camera['R_w2c'] is None:
         print(f'[Warning] camera {args.cam:02d} has no extrinsics, world_* outputs are NaN')
-    video = cosilab.video_path(args.data_root, args.cam)
+    video = cosilab.video_source(args.data_root, args.cam)  # the raw GoPro folder for cameras without a session video
     args.keypoints_path = cosilab.keypoints_path(args.data_root, args.cam_batch, args.keypoints_root)
     tracks = cosilab.load_tracks(args.keypoints_path)
 
@@ -342,7 +342,7 @@ def main(args):
     hmr_model = get_hmr_vimo(checkpoint=args.checkpoint, device=args.device)
     smpl = SMPL().to(args.device)
 
-    hmr_results = run_tracks(args, hmr_model, tracks, camera, video, start)
+    hmr_results = run_tracks(args, hmr_model, tracks, camera, start)
     del hmr_model
     torch.cuda.empty_cache()
 

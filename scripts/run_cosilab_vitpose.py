@@ -162,7 +162,7 @@ def predict(model, img, boxes, flip_pairs, device):
 def main(args):
     torch.backends.cuda.matmul.allow_tf32 = True
     cam, batch, _ = cosilab.parse_cam_batch(args.cam_batch)
-    video = cosilab.video_path(args.data_root, cam)
+    video = cosilab.video_source(args.data_root, cam)
     src = cosilab.keypoints_path(args.data_root, args.cam_batch)
     flip_pairs = cosilab.CONFLAB_FLIP_PAIRS
 
@@ -181,7 +181,7 @@ def main(args):
           f'video {video}, checkpoint {args.checkpoint}', flush=True)
 
     model = load_model(args.checkpoint, args.device)
-    reader = cosilab.VideoReader(video, cosilab.session_frame(batch, first), last - first + 1)
+    reader = cosilab.open_video(args.data_root, cam, cosilab.session_frame(batch, first), last - first + 1)
 
     out = {}
     n_crops, t0 = 0, time.time()

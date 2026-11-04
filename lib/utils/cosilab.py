@@ -174,6 +174,131 @@ class VideoReader:
             proc.wait()
 
 
+REFERENCE_CAM = {1: 6, 2: 1}  # the camera whose world_time.csv maps session frames to world time
+# Cameras without dataset keypoints -> their neighbours in the camera row that have them. Camera 05 is left out (bad camera).
+NEIGHBOURS = {2: (1, 3), 4: (3,), 7: (6, 8), 9: (8, 10)}
+
+
+def raw_video_dir(data_root, cam):
+    """Folder of the raw GoPro files GH0*.MP4 of a camera (raw/ is next to processed/)."""
+    session = 1 if cam >= 6 else 2
+    return os.path.join(os.path.dirname(os.path.normpath(data_root)), 'raw', 'video',
+                        f'top_view_camera-mingle_session_{session}', f'camera_{cam:02d}-mingle_session_{session}')
+
+
+def _seconds(stamps):
+    """'HH:MM:SS.ffffff' strings -> seconds of the day."""
+    return np.array([int(s[:2]) * 3600 + int(s[3:5]) * 60 + float(s[6:]) for s in stamps])
+
+
+def raw_frame_table(data_root, cam, session=None):
+    """
+    For every session frame, the raw GoPro frame of camera `cam` nearest in world time.
+    Session frame -> world time from the reference camera's keypoints/vitpose_dataframe/camXX_world_time.csv,
+    world time -> raw frame from processed/videos/timestamps/mingle_session_S/camera_XX-*/GH0*.csv (one row per frame).
+    Returns {'files': [GH0*.MP4 names], 'file': (N,) index into files, 'raw_frame': (N,), 'dt': (N,) s}.
+    """
+    session = session or (1 if cam >= 6 else 2)
+    ref = os.path.join(data_root, 'keypoints', 'vitpose_dataframe', f'cam{REFERENCE_CAM[session]:02d}_world_time.csv')
+    with open(ref) as f:
+        header = f.readline().strip().split(',')
+        rows = [line.rstrip('\n').split(',') for line in f]
+    assert [int(r[0]) for r in rows[:2]] == [0, 1], ref
+    session_time = _seconds([r[header.index('world_timestamp')] for r in rows])
+
+    ts_dir = os.path.join(data_root, 'videos', 'timestamps', f'mingle_session_{session}',
+                          f'camera_{cam:02d}-mingle_session_{session}')
+    names = sorted(n for n in os.listdir(ts_dir) if re.fullmatch(r'GH\d+\.csv', n))
+    times, file_idx, frame_idx = [], [], []
+    for i, name in enumerate(names):
+        with open(os.path.join(ts_dir, name)) as f:
+            col = f.readline().strip().split(',').index('world_timestamp')
+            t = _seconds([line.rstrip('\n').split(',')[col] for line in f if line.strip()])
+        times.append(t)
+        file_idx.append(np.full(len(t), i))
+        frame_idx.append(np.arange(len(t)))
+    times, file_idx, frame_idx = map(np.concatenate, (times, file_idx, frame_idx))
+    order = np.argsort(times, kind='stable')
+    times, file_idx, frame_idx = times[order], file_idx[order], frame_idx[order]
+
+    j = np.searchsorted(times, session_time).clip(1, len(times) - 1)
+    j = np.where(np.abs(times[j - 1] - session_time) <= np.abs(times[j] - session_time), j - 1, j)
+    return {'files': [n.replace('.csv', '.MP4') for n in names], 'file': file_idx[j], 'raw_frame': frame_idx[j],
+            'dt': times[j] - session_time}
+
+
+class RawVideoReader:
+    """
+    Frames of a camera without a session video, read from its raw GoPro files at the session frame indices
+    (see raw_frame_table). Same interface as VideoReader: yields BGR uint8 (H, W, 3) per session frame.
+    Raw frames are repeated or skipped where the world clock has gaps.
+    """
+    def __init__(self, data_root, cam, start_frame, num_frames, fps=FPS, table=None):
+        self.cam, self.start_frame, self.num_frames, self.fps = cam, start_frame, num_frames, fps
+        self.dir = raw_video_dir(data_root, cam)
+        table = table or raw_frame_table(data_root, cam)
+        sl = slice(start_frame, start_frame + num_frames)
+        self.files = table['files']
+        self.file, self.raw_frame, self.dt = table['file'][sl], table['raw_frame'][sl], table['dt'][sl]
+        if len(self.file) < num_frames:
+            raise ValueError(f'cam{cam:02d}: the session has {len(table["file"])} frames, asked up to {sl.stop}')
+        self.path = self.dir
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
+             '-of', 'csv=p=0', os.path.join(self.dir, self.files[self.file[0]])],
+            capture_output=True, text=True, check=True)
+        self.width, self.height = map(int, probe.stdout.strip().split(',')[:2])
+
+    def __len__(self):
+        return self.num_frames
+
+    def segments(self):
+        """(file name, first raw frame, raw frames to decode, wanted raw frames per session frame) per file."""
+        out = []
+        breaks = np.nonzero(np.diff(self.file) != 0)[0] + 1
+        for s, e in zip(np.r_[0, breaks], np.r_[breaks, len(self.file)]):
+            raw = self.raw_frame[s:e]
+            if np.any(np.diff(raw) < 0):
+                raise RuntimeError(f'cam{self.cam:02d}: raw frames go backwards in {self.files[self.file[s]]}')
+            out.append((self.files[self.file[s]], int(raw[0]), int(raw[-1] - raw[0] + 1), raw - raw[0]))
+        return out
+
+    def __iter__(self):
+        frame_bytes = self.width * self.height * 3
+        for name, first, count, wanted in self.segments():
+            cmd = ['ffmpeg', '-nostdin', '-v', 'error', '-ss', f'{first / self.fps:.6f}',
+                   '-i', os.path.join(self.dir, name), '-frames:v', str(count),
+                   '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-']
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=frame_bytes * 4)
+            try:
+                pos, frame = -1, None
+                for w in wanted:
+                    while pos < w:
+                        buf = bytearray(frame_bytes)
+                        if proc.stdout.readinto(buf) < frame_bytes:
+                            return
+                        frame, pos = np.frombuffer(buf, np.uint8).reshape(self.height, self.width, 3), pos + 1
+                    yield frame
+            finally:
+                proc.stdout.close()
+                proc.kill()
+                proc.wait()
+
+
+def video_source(data_root, cam):
+    """The session video of a camera if it exists, otherwise its raw GoPro folder."""
+    path = video_path(data_root, cam)
+    return path if os.path.exists(path) else raw_video_dir(data_root, cam)
+
+
+def open_video(data_root, cam, start_frame, num_frames):
+    """Reader of session frames [start_frame, start_frame + num_frames): the session video, else the raw files."""
+    path = video_path(data_root, cam)
+    if os.path.exists(path):
+        return VideoReader(path, start_frame, num_frames)
+    return RawVideoReader(data_root, cam, start_frame, num_frames)
+
+
 def load_results(result_dir, which='hmr'):
     """
     Load the output of scripts/run_cosilab_smpl.py for one cam-batch.

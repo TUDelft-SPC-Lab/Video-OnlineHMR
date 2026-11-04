@@ -63,7 +63,11 @@ def main():
     faces = np.asarray(smpl.faces, dtype=np.int64)
     kp_to_spin, skeleton = cosilab.CONFLAB_TO_SPIN, cosilab.CONFLAB_SKELETON
 
-    reader = cosilab.VideoReader(video, camera['session_frame_offset'] + start, args.num_frames)
+    first = camera['session_frame_offset'] + start
+    if os.path.isdir(video):  # a camera without a session video: its raw GoPro files
+        reader = cosilab.RawVideoReader(camera['data_root'], camera['cam'], first, args.num_frames)
+    else:
+        reader = cosilab.VideoReader(video, first, args.num_frames)
     out_size = (int(reader.width * args.resize), int(reader.height * args.resize))
     writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), cosilab.FPS / args.stride, out_size)
 
