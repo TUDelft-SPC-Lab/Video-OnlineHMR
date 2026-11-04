@@ -47,6 +47,7 @@ def main():
     parser.add_argument('--num_frames', type=int, default=None)
     parser.add_argument('--stride', type=int, default=2, help='timeline step in video frames')
     parser.add_argument('--all_cameras', action='store_true', help='also show the other session cameras')
+    parser.add_argument('--fps', type=int, default=60, help='initial playback speed (1-60)')
     parser.add_argument('--port', type=int, default=8080)
     args = parser.parse_args()
 
@@ -138,7 +139,7 @@ def main():
         gui_step = server.gui.add_slider('Timestep', min=0, max=len(timeline) - 1, step=1, initial_value=0)
         gui_frame = server.gui.add_text('Batch frame', str(timeline[0]), disabled=True)
         gui_playing = server.gui.add_checkbox('Playing', True)
-        gui_fps = server.gui.add_slider('FPS', min=1, max=60, step=1, initial_value=15)
+        gui_fps = server.gui.add_slider('FPS', min=1, max=60, step=1, initial_value=min(max(args.fps, 1), 60))
 
     meshes = {}
 
