@@ -9,6 +9,8 @@ camera close to the start, like the single-view refinement. People seen by one c
 here; their single-view result stays in --hmr_root.
 
 python scripts/run_cosilab_multiview.py --cam_batches cam01_batch01 cam03_batch01
+python scripts/run_cosilab_multiview.py --cam_batches cam01_batch01 cam02_batch01 cam03_batch01 cam04_batch01 \
+    --out_dir .../cosilab_multiview_4cam   # cam02/cam04: keypoints of scripts/cosilab_assign_ids.py
 """
 import os
 import sys
@@ -48,6 +50,8 @@ def parse_args(argv=None):
     parser.add_argument('--w_smooth', type=float, default=10.0, help='3D joint acceleration')
     parser.add_argument('--w_depth', type=float, default=0.1,
                         help='on single-camera frames: stay close to the start depth in that camera')
+    parser.add_argument('--view_weight', type=str, nargs='*', default=[],
+                        help='keypoint weight per cam-batch, e.g. cam02_batch01=0.5 (default 1 for every view)')
     parser.add_argument('--min_view_kp', type=int, default=3,
                         help='confident keypoints a camera needs in a frame to count as seeing the person')
     return parser.parse_args(argv)
@@ -58,7 +62,7 @@ def load_views(args):
     for cam_batch in args.cam_batches:
         view = load_view(args.hmr_root, cam_batch)
         camera, tracks = cosilab.load_results(os.path.join(args.hmr_root, cam_batch), 'hmr')
-        view.update(camera=camera, hmr=tracks, batch=camera['batch'])
+        view.update(camera=camera, hmr=tracks, batch=camera['batch'], weight=args.view_weights.get(cam_batch, 1.0))
         for key, to_tensor in [('K', view['K']), ('D', view['D']), ('R', view['R']), ('t', view['t'])]:
             view['torch_' + key] = torch.tensor(to_tensor, dtype=torch.float32, device=args.device)
         views.append(view)
@@ -191,8 +195,8 @@ def refine_person(args, smpl, views, pid, start):
                 kp_sum, conf_sum = 0, 0
                 for view, (target, conf, box_size) in zip(seen, window_targets):
                     gmof = gmof_keypoint_loss(project_view(joints, view), target, box_size, args.gmof_sigma)
-                    kp_sum = kp_sum + (conf * gmof).sum()
-                    conf_sum = conf_sum + conf.sum()
+                    kp_sum = kp_sum + view['weight'] * (conf * gmof).sum()
+                    conf_sum = conf_sum + view['weight'] * conf.sum()
                 l_kp = kp_sum / conf_sum.clamp(min=1)
                 l_pose = (R[:, 1:] - init_body).pow(2).sum((-1, -2)).mean()
                 l_beta = betas.pow(2).mean()
@@ -227,7 +231,12 @@ def camera_result(smpl, body, view, pid):
 def main(args):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.set_grad_enabled(False)
+    args.view_weights = {k: float(v) for k, v in (w.split('=') for w in args.view_weight)}
+    unknown = set(args.view_weights) - set(args.cam_batches)
+    if unknown:
+        raise ValueError(f'--view_weight for cam-batches not in --cam_batches: {sorted(unknown)}')
     views = load_views(args)
+    print('keypoint weight per view: ' + ', '.join(f'{v["name"]} {v["weight"]:g}' for v in views))
     smpl = SMPL().to(args.device)
 
     ids = [p for p in sorted(views[0]['tracks']) if sum(p in v['tracks'] for v in views) >= 2]
