@@ -184,7 +184,7 @@ def load_results(result_dir, which='hmr'):
     track_dir = os.path.join(result_dir, which)
     tracks = {}
     for name in sorted(os.listdir(track_dir)):
-        m = re.fullmatch(r'track_(\d+)\.npz', name)
+        m = re.fullmatch(r'track_(-?\d+)\.npz', name)
         if m:
             with np.load(os.path.join(track_dir, name)) as data:
                 tracks[int(m.group(1))] = dict(data)

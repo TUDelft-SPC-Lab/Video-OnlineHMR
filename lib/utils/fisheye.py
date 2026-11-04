@@ -17,7 +17,8 @@ import torch.nn.functional as F
 
 def unproject(pts, K, D):
     """Pixels (N, 2) -> unit rays (N, 3) in camera coordinates."""
-    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 1, 2)
+    # a contiguous copy: cv2 misreads strided views such as kp[..., :2]
+    pts = np.array(pts, dtype=np.float64, order='C').reshape(-1, 1, 2)
     xy = cv2.fisheye.undistortPoints(pts, np.asarray(K, np.float64), np.asarray(D, np.float64)).reshape(-1, 2)
     rays = np.concatenate([xy, np.ones_like(xy[:, :1])], axis=1)
     return rays / np.linalg.norm(rays, axis=1, keepdims=True)

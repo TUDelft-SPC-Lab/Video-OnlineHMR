@@ -204,6 +204,19 @@ def batched(fn, x, bs=2048):
     return torch.cat([fn(x[i:i + bs]) for i in range(0, x.shape[0], bs)])
 
 
+def gmof_keypoint_loss(j2d, target, box_size, sigma):
+    """Robust squared 2D keypoint error per joint, in box-size units."""
+    res = ((j2d - target) / box_size).pow(2).sum(-1)
+    return sigma**2 * res / (sigma**2 + res)
+
+
+def smoothness_loss(j3d):
+    """Mean squared 3D joint acceleration of (T, J, 3) joints."""
+    if j3d.shape[0] <= 2:
+        return 0
+    return (j3d[2:] - 2 * j3d[1:-1] + j3d[:-2]).pow(2).sum(-1).mean()
+
+
 def refine_track(args, smpl, cam_res, track, camera):
     """
     SMPLify-style fit to the ViTPose keypoints, initialised from HMR, per contiguous chunk and window.
@@ -244,14 +257,12 @@ def refine_track(args, smpl, cam_res, track, camera):
                 out = smpl(global_orient=R[:, :1], body_pose=R[:, 1:], betas=betas.expand(T, -1),
                            transl=transl, pose2rot=False)
                 j2d = fisheye.project_torch(out.joints[:, kp_to_spin], K, D)
-                res = ((j2d - target) / box_size[s:e, None, None]).pow(2).sum(-1)
-                gmof = args.gmof_sigma**2 * res / (args.gmof_sigma**2 + res)
+                gmof = gmof_keypoint_loss(j2d, target, box_size[s:e, None, None], args.gmof_sigma)
                 l_kp = (conf * gmof).sum() / conf.sum().clamp(min=1)
                 l_pose = (R - init_rot).pow(2).sum((-1, -2)).mean()
                 l_beta = betas.pow(2).mean()
                 l_depth = (transl[:, 2] - init_trans[:, 2]).pow(2).mean()
-                j3d = out.joints[:, :25]
-                l_smooth = (j3d[2:] - 2 * j3d[1:-1] + j3d[:-2]).pow(2).sum(-1).mean() if T > 2 else 0
+                l_smooth = smoothness_loss(out.joints[:, :25])
                 loss = (l_kp + args.w_pose * l_pose + args.w_beta * l_beta
                         + args.w_depth * l_depth + args.w_smooth * l_smooth)
                 optim.zero_grad()
