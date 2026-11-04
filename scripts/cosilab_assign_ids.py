@@ -4,9 +4,10 @@ keypoints of its neighbouring cameras (which carry the dataset person IDs). CPU 
 
 Cost of a box vs person p in frame f: per neighbour that sees p in f, the median ray gap (m, scripts/cosilab_multiview_calib.py)
 between the box's VIT003 keypoint rays and the neighbour's keypoint rays of p, over joints with conf > --kp_conf in both
-(at least --min_joints); the mean over those neighbours. It doesn't depend on any HMR depth.
+(at least --min_joints); the mean over those neighbours. Joints whose rays only meet behind a camera count as a 1 m gap. It doesn't depend on any HMR depth.
   1. detector boxes are linked into tracklets (greedy IoU between consecutive frames); a tracklet's cost for p is the
-     median over its frames. Per frame, Hungarian over the tracklets present, gated at --max_gap. Unmatched boxes are dropped.
+     median over its frames. Per frame, Hungarian over the tracklets present, gated at --max_gap and at --best_margin over
+     the tracklet's best ID (so duplicate boxes don't take a second-best ID). Unmatched boxes are dropped.
   2. fill-in: a (frame, person) a neighbour sees but no detector box got takes that person's projected box
      (scripts/cosilab_project_boxes.py) if its own keypoints pass the same gate, unless it overlaps (IoU >= 0.5) a detector box
      assigned to someone else.
@@ -33,11 +34,12 @@ from scipy.optimize import linear_sum_assignment
 
 from lib.models.smpl import SMPL
 from lib.utils import cosilab, fisheye
-from cosilab_multiview_calib import load_view, ray_gap
+from cosilab_multiview_calib import load_view, ray_gap, triangulate
 from run_cosilab_detect_vitpose import iou_matrix
 
 EXP_DIR = '/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR'
 IMG_W, IMG_H = 1920, 1080
+BEHIND_GAP = 1.0  # m, the gap of joints whose rays meet behind either camera
 
 
 def parse_args(argv=None):
@@ -50,6 +52,9 @@ def parse_args(argv=None):
     parser.add_argument('--kp_conf', type=float, default=0.3)
     parser.add_argument('--min_joints', type=int, default=3)
     parser.add_argument('--max_gap', type=float, default=0.15, help='gate on the ray-gap cost (m)')
+    parser.add_argument('--best_margin', type=float, default=0.03,
+                        help='a tracklet only takes IDs within this cost (m) of its best ID; duplicate boxes of a person '
+                             'then get no ID instead of their second-best one')
     parser.add_argument('--link_iou', type=float, default=0.3, help='IoU linking detector boxes of consecutive frames')
     parser.add_argument('--overlap_iou', type=float, default=0.5,
                         help='a fill-in box is skipped if it overlaps a detector box of another person this much')
@@ -93,6 +98,9 @@ def box_costs(kp, rays, C, neighbours, sframe, args):
         pids, nkp, nrays = nb['index'][sframe]
         valid = (kp[:, None, :, 2] > args.kp_conf) & (nkp[None, :, :, 2] > args.kp_conf)  # (N, P', 17)
         gap = ray_gap(rays[:, None], nrays[None], nb['C'] - C)  # (N, P', 17)
+        # ray_gap is the distance between lines: rays that only meet behind a camera get BEHIND_GAP instead
+        _, s, u = triangulate(C, rays[:, None], nb['C'], nrays[None])
+        gap = np.where((s > 0) & (u > 0), gap, BEHIND_GAP)
         gap = np.where(valid, gap, np.nan)
         ok = valid.sum(-1) >= args.min_joints
         with warnings.catch_warnings():  # all-nan slices: fewer than min_joints, masked by ok
@@ -252,8 +260,10 @@ def main(args):
             continue
         M = np.full((len(idx), len(people)), 1e3)
         for a, t in enumerate(ts):
+            best_t = min(tracklet_cost[t].values(), default=1e3)
             for b, p in enumerate(people):
-                M[a, b] = tracklet_cost[t].get(p, 1e3)
+                c = tracklet_cost[t].get(p, 1e3)
+                M[a, b] = c if c <= best_t + args.best_margin else 1e3
         for a, b in zip(*linear_sum_assignment(M)):
             if M[a, b] <= args.max_gap:
                 det_pid[idx[a]] = people[b]
