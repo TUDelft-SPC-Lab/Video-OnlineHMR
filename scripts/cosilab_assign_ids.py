@@ -52,8 +52,14 @@ def parse_args(argv=None):
     parser.add_argument('--kp_conf', type=float, default=0.3)
     parser.add_argument('--min_joints', type=int, default=3)
     parser.add_argument('--max_gap', type=float, default=0.15, help='gate on the ray-gap cost (m)')
+    parser.add_argument('--w_body', type=float, default=0.1,
+                        help='score = ray gap + w_body * body distance (m), for ranking IDs')
+    parser.add_argument('--max_body_dist', type=float, default=1.0,
+                        help='gate on the body distance (m): triangulated joints vs the neighbour\'s 3D body')
+    parser.add_argument('--max_body_dist_mv', type=float, default=0.5,
+                        help='the same gate for people with a multi-view body')
     parser.add_argument('--best_margin', type=float, default=0.03,
-                        help='a tracklet only takes IDs within this cost (m) of its best ID; duplicate boxes of a person '
+                        help='a tracklet only takes IDs within this score of its best ID; duplicate boxes of a person '
                              'then get no ID instead of their second-best one')
     parser.add_argument('--link_iou', type=float, default=0.3, help='IoU linking detector boxes of consecutive frames')
     parser.add_argument('--overlap_iou', type=float, default=0.5,
@@ -82,16 +88,55 @@ def neighbour_index(view):
     return out
 
 
+def multiview_pids(args):
+    """People with a multi-view body under --multi_root."""
+    pids = set()
+    for d in sorted(os.listdir(args.multi_root)) if os.path.isdir(args.multi_root) else []:
+        if os.path.isdir(os.path.join(args.multi_root, d, 'refined')):
+            pids |= {p for p in cosilab.load_results(os.path.join(args.multi_root, d), 'refined')[1] if p >= 0}
+    return pids
+
+
+def neighbour_bodies(args, nb_name, smpl):
+    """
+    {session frame: {pid: ConfLab joints (17, 3)}} of a neighbour's people in the world frame: the multi-view body
+    (--multi_root) where one exists, otherwise the neighbour's single-view refined body (--hmr_root/<nb>/refined).
+    """
+    multi = {}
+    for d in sorted(os.listdir(args.multi_root)) if os.path.isdir(args.multi_root) else []:
+        if os.path.isdir(os.path.join(args.multi_root, d, 'refined')):
+            for pid, t in cosilab.load_results(os.path.join(args.multi_root, d), 'refined')[1].items():
+                multi.setdefault(pid, []).append(t)
+    single = cosilab.load_results(os.path.join(args.hmr_root, nb_name), 'refined')[1]
+    out = defaultdict(dict)
+    for pid in set(single) | set(multi):
+        if pid < 0:
+            continue
+        for t in multi[pid] if pid in multi else [single[pid]]:
+            with torch.no_grad():
+                J = smpl(global_orient=torch.tensor(t['world_rotmat_root'])[:, None],
+                         body_pose=torch.tensor(t['pred_rotmat'])[:, 1:], betas=torch.tensor(t['pred_shape']),
+                         transl=torch.tensor(t['world_trans']), pose2rot=False).joints[:, cosilab.CONFLAB_TO_SPIN].numpy()
+            for f, j in zip(t['session_frame_ids'], J):
+                out[int(f)][pid] = j
+    return out
+
+
 def box_costs(kp, rays, C, neighbours, sframe, args):
     """
     Costs (N, P) of N boxes of one frame vs every person seen by a neighbour in that frame, nan without evidence.
-    Returns (pids (P,), cost, n_joints (N, P)).
+    Also the body distance (N, P): the median distance (m) of the triangulated joints to the neighbour's 3D body of
+    the person (neighbour_bodies), mean over the neighbours, nan without a body. It separates people that the ray gap
+    can't, those in one plane through the (collinear) camera centres.
+    Returns (pids (P,), cost, n_joints (N, P), body distance).
     """
     seen = sorted({int(p) for nb in neighbours if sframe in nb['index'] for p in nb['index'][sframe][0]})
     col = {p: j for j, p in enumerate(seen)}
     total = np.zeros((len(kp), len(seen)))
     count = np.zeros((len(kp), len(seen)))
     joints = np.zeros((len(kp), len(seen)), dtype=int)
+    btotal = np.zeros((len(kp), len(seen)))
+    bcount = np.zeros((len(kp), len(seen)))
     for nb in neighbours:
         if sframe not in nb['index']:
             continue
@@ -99,21 +144,38 @@ def box_costs(kp, rays, C, neighbours, sframe, args):
         valid = (kp[:, None, :, 2] > args.kp_conf) & (nkp[None, :, :, 2] > args.kp_conf)  # (N, P', 17)
         gap = ray_gap(rays[:, None], nrays[None], nb['C'] - C)  # (N, P', 17)
         # ray_gap is the distance between lines: rays that only meet behind a camera get BEHIND_GAP instead
-        _, s, u = triangulate(C, rays[:, None], nb['C'], nrays[None])
+        X, s, u = triangulate(C, rays[:, None], nb['C'], nrays[None])
         gap = np.where((s > 0) & (u > 0), gap, BEHIND_GAP)
         gap = np.where(valid, gap, np.nan)
         ok = valid.sum(-1) >= args.min_joints
+        body = nb['bodies'].get(sframe, {})
+        J = np.stack([body.get(int(p), np.full((17, 3), np.nan)) for p in pids])  # (P', 17, 3)
+        bd = np.where(valid, np.linalg.norm(X - J[None], axis=-1), np.nan)
         with warnings.catch_warnings():  # all-nan slices: fewer than min_joints, masked by ok
             warnings.simplefilter('ignore', RuntimeWarning)
             med = np.nanmedian(np.where(ok[..., None], gap, np.nan), -1)
+            bmed = np.nanmedian(np.where(ok[..., None], bd, np.nan), -1)
         for jj, p in enumerate(pids):
             c = col[int(p)]
             total[:, c] += np.where(ok[:, jj], med[:, jj], 0)
             count[:, c] += ok[:, jj]
             joints[:, c] = np.maximum(joints[:, c], valid[:, jj].sum(-1))
+            hb = ok[:, jj] & np.isfinite(bmed[:, jj])
+            btotal[:, c] += np.where(hb, bmed[:, jj], 0)
+            bcount[:, c] += hb
     with np.errstate(all='ignore'):
         cost = np.where(count > 0, total / count.clip(min=1), np.nan)
-    return np.array(seen, dtype=int), cost, joints
+        bdist = np.where(bcount > 0, btotal / bcount.clip(min=1), np.nan)
+    return np.array(seen, dtype=int), cost, joints, bdist
+
+
+def passes(c, args):
+    """
+    The gate on a cost dict: ray gap <= --max_gap and body distance <= --max_body_dist (if there is a body), or
+    --max_body_dist_mv for people with a multi-view body (accurate, so a tighter gate).
+    """
+    limit = args.max_body_dist_mv if c['mv'] else args.max_body_dist
+    return c['gap'] <= args.max_gap and not c['body'] > limit
 
 
 def link_tracklets(frames, boxes, link_iou):
@@ -216,13 +278,18 @@ def main(args):
     out_dir = os.path.join(args.out_dir, args.cam_batch)
     det = dict(np.load(os.path.join(out_dir, 'detections.npz')))
     nb_names = [f'cam{c:02d}_batch{batch:02d}' for c in cosilab.NEIGHBOURS[cam]]
+    smpl = SMPL()
     neighbours = []
     for name in nb_names:
         v = load_view(args.hmr_root, name)
         v['index'] = neighbour_index(v)
+        v['bodies'] = neighbour_bodies(args, name, smpl)
         neighbours.append(v)
         print(f'{name}: {len(v["tracks"])} people, camera {np.linalg.norm(v["C"] - C):.2f} m away')
 
+    mv_pids = multiview_pids(args)
+    print(f'people with a multi-view body (body-distance gate {args.max_body_dist_mv} m, else {args.max_body_dist} m): '
+          f'{sorted(mv_pids)}')
     frames = det['frame'].astype(int)
     sframes = cosilab.session_frame(batch, frames)
     rays = world_rays(det['kp'], K, D, R)
@@ -232,9 +299,9 @@ def main(args):
     costs = {}
     for f in np.unique(sframes):
         idx = np.nonzero(sframes == f)[0]
-        pids, cost, nj = box_costs(det['kp'][idx], rays[idx], C, neighbours, int(f), args)
+        pids, cost, nj, bdist = box_costs(det['kp'][idx], rays[idx], C, neighbours, int(f), args)
         for k, i in enumerate(idx):
-            costs[i] = (pids, cost[k], nj[k])
+            costs[i] = (pids, cost[k], nj[k], bdist[k])
 
     # 1. detector tracklets, Hungarian per frame on tracklet costs
     di = np.nonzero(is_det)[0]
@@ -245,11 +312,18 @@ def main(args):
         members = np.nonzero(tid == t)[0]
         per_p = defaultdict(list)
         for i in members:
-            for p, c in zip(costs[i][0], costs[i][1]):
+            for p, c, b in zip(costs[i][0], costs[i][1], costs[i][3]):
                 if np.isfinite(c):
-                    per_p[int(p)].append(c)
-        tracklet_cost[int(t)] = {p: float(np.median(v)) for p, v in per_p.items()
-                                 if len(v) >= min(3, len(members))}
+                    per_p[int(p)].append((c, b))
+        tracklet_cost[int(t)] = {}
+        for p, v in per_p.items():
+            if len(v) < min(3, len(members)):
+                continue
+            c, b = np.array(v).T
+            gap = float(np.median(c))
+            body = float(np.nanmedian(b)) if np.isfinite(b).any() else np.nan
+            score = gap + args.w_body * (body if np.isfinite(body) else args.max_body_dist)
+            tracklet_cost[int(t)][p] = {'gap': gap, 'body': body, 'score': score, 'mv': p in mv_pids}
     assigned = {}  # (frame, pid) -> (kind, kp, box index)
     det_pid = np.full(len(frames), -1)
     for f in np.unique(frames[di]):
@@ -260,12 +334,13 @@ def main(args):
             continue
         M = np.full((len(idx), len(people)), 1e3)
         for a, t in enumerate(ts):
-            best_t = min(tracklet_cost[t].values(), default=1e3)
+            tc = tracklet_cost[t]
+            best_t = min((x['score'] for x in tc.values()), default=1e3)
             for b, p in enumerate(people):
-                c = tracklet_cost[t].get(p, 1e3)
-                M[a, b] = c if c <= best_t + args.best_margin else 1e3
+                if p in tc and passes(tc[p], args) and tc[p]['score'] <= best_t + args.best_margin:
+                    M[a, b] = tc[p]['score']
         for a, b in zip(*linear_sum_assignment(M)):
-            if M[a, b] <= args.max_gap:
+            if M[a, b] < 1e3:
                 det_pid[idx[a]] = people[b]
                 assigned[(int(f), people[b])] = ('detector', det['kp'][idx[a]], int(idx[a]))
 
@@ -279,9 +354,9 @@ def main(args):
         if (f, p) in assigned:
             fill_stats[f'{src}: detector box exists'] += 1
             continue
-        pids, cost, _ = costs[i]
-        c = cost[pids == p]
-        if len(c) == 0 or not np.isfinite(c[0]) or c[0] > args.max_gap:
+        pids, cost, _, bdist = costs[i]
+        c, b = cost[pids == p], bdist[pids == p]
+        if len(c) == 0 or not np.isfinite(c[0]) or not passes({'gap': c[0], 'body': b[0], 'mv': p in mv_pids}, args):
             fill_stats[f'{src}: failed gate'] += 1
             rejected[p] += 1
             continue
@@ -321,21 +396,26 @@ def main(args):
     for t, tc in sorted(tracklet_cost.items()):
         members = np.nonzero(tid == t)[0]
         got = Counter(det_pid[members][det_pid[members] >= 0].tolist())
-        order = sorted(tc.items(), key=lambda x: x[1])
+        order = sorted(tc.items(), key=lambda x: x[1]['score'])
         tracklets.append({'tracklet': t, 'n_frames': int(len(members)),
                           'frames': [int(frames[members].min()), int(frames[members].max())],
                           'ids': {int(k): int(v) for k, v in got.items()},
-                          'best': order[0] if order else None, 'second': order[1] if len(order) > 1 else None})
-    long_t = [x for x in tracklets if x['n_frames'] >= 30 and x['best'] is not None]
-    margins = np.array([(x['second'][1] if x['second'] else np.inf) - x['best'][1] for x in long_t])
+                          'candidates': [{'pid': p, **c} for p, c in order[:4]]})
+    long_t = [x for x in tracklets if x['n_frames'] >= 30 and x['candidates']]
+
+    def margin(x):
+        c = x['candidates']
+        return c[1]['score'] - c[0]['score'] if len(c) > 1 else np.inf
+    margins = np.array([margin(x) for x in long_t])
     if len(long_t):
-        print(f'  tracklets >= 30 frames: {len(long_t)}, best cost median {np.median([x["best"][1] for x in long_t]):.3f} m, '
-              f'margin to the 2nd-best ID median {np.median(margins):.3f} m, under 0.05 m: {int((margins < 0.05).sum())}')
+        print(f'  tracklets >= 30 frames: {len(long_t)}, best score median '
+              f'{np.median([x["candidates"][0]["score"] for x in long_t]):.3f}, margin to the 2nd-best ID median '
+              f'{np.median(margins):.3f}, under 0.05: {int((margins < 0.05).sum())}')
         for x in long_t:
-            m = (x['second'][1] if x['second'] else np.inf) - x['best'][1]
-            if m < 0.05 and x['best'][1] <= args.max_gap:
-                print(f'    small margin: tracklet {x["tracklet"]} ({x["n_frames"]} frames {x["frames"]}): '
-                      f'best {x["best"][0]} {x["best"][1]:.3f}, 2nd {x["second"][0]} {x["second"][1]:.3f}')
+            c = x['candidates']
+            if margin(x) < 0.05 and passes(c[0], args):
+                print(f'    small margin: tracklet {x["tracklet"]} ({x["n_frames"]} frames {x["frames"]}, got {x["ids"]}): '
+                      + ', '.join(f'{y["pid"]} gap {y["gap"]:.3f} body {y["body"]:.2f}' for y in c[:2]))
 
     per_id = {}
     print('\nper ID: person-frames from detector / fill-in, fill-ins rejected by the gate, frames seen by a neighbour')
