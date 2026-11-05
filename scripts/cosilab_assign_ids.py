@@ -12,8 +12,12 @@ between the box's VIT003 keypoint rays and the neighbour's keypoint rays of p, o
      (scripts/cosilab_project_boxes.py) if its own keypoints pass the same gate, unless it overlaps (IoU >= 0.5) a detector box
      assigned to someone else.
   3. runs shorter than --min_track_len frames are dropped.
-Then, as an ID check that doesn't use the new view's fit, the 2-camera multi-view bodies are projected into this camera and
-compared with the assigned keypoints of the same ID.
+Then, as an ID check that doesn't use the new view's fit, the 2-camera multi-view bodies (--check_root) are projected into
+this camera and compared with the assigned keypoints of the same ID.
+
+With --visibility (side cameras, many occlusions), <out_dir>/<cam_batch>/visibility.npz of scripts/cosilab_visibility.py
+says which joints of each person this camera sees (not behind another person): only those joints enter the costs, people
+under --min_vis_frac visible take no box, and the saved keypoints have confidence 0 on the joints hidden for their ID.
 
 python scripts/cosilab_assign_ids.py --cam_batch cam02_batch01
 Output in <out_dir>/<cam_batch>/: vitpose_keypoints.json (dataset layout, 960x540) for run_cosilab_smpl.py --keypoints_root,
@@ -47,7 +51,12 @@ def parse_args(argv=None):
     parser.add_argument('--cam_batch', type=str, required=True, help='e.g. cam02_batch01')
     parser.add_argument('--data_root', type=str, default=cosilab.DATA_ROOT)
     parser.add_argument('--hmr_root', type=str, default=f'{EXP_DIR}/cosilab_smpl', help='neighbour results (keypoints)')
-    parser.add_argument('--multi_root', type=str, default=f'{EXP_DIR}/cosilab_multiview', help='for the ID check')
+    parser.add_argument('--multi_root', type=str, default=f'{EXP_DIR}/cosilab_multiview',
+                        help='multi-view bodies for the body-distance cue (and the ID check without --check_root)')
+    parser.add_argument('--check_root', type=str, default=None, help='multi-view bodies for the ID check')
+    parser.add_argument('--visibility', action='store_true', help='use <out_dir>/<cam_batch>/visibility.npz')
+    parser.add_argument('--min_vis_frac', type=float, default=0.3,
+                        help='with --visibility: people less visible than this in a frame take no box')
     parser.add_argument('--out_dir', type=str, default=f'{EXP_DIR}/cosilab_vit003_extra')
     parser.add_argument('--kp_conf', type=float, default=0.3)
     parser.add_argument('--min_joints', type=int, default=3)
@@ -107,7 +116,8 @@ def neighbour_bodies(args, nb_name, smpl):
         if os.path.isdir(os.path.join(args.multi_root, d, 'refined')):
             for pid, t in cosilab.load_results(os.path.join(args.multi_root, d), 'refined')[1].items():
                 multi.setdefault(pid, []).append(t)
-    single = cosilab.load_results(os.path.join(args.hmr_root, nb_name), 'refined')[1]
+    single_dir = os.path.join(args.hmr_root, nb_name)  # cameras without dataset keypoints have no refined bodies
+    single = cosilab.load_results(single_dir, 'refined')[1] if os.path.isdir(os.path.join(single_dir, 'refined')) else {}
     out = defaultdict(dict)
     for pid in set(single) | set(multi):
         if pid < 0:
@@ -122,12 +132,22 @@ def neighbour_bodies(args, nb_name, smpl):
     return out
 
 
-def box_costs(kp, rays, C, neighbours, sframe, args):
+def load_visibility(path, batch, min_vis_frac):
+    """{session frame: {pid: joint_vis (17,) bool}}; joints of people under min_vis_frac visible are all False."""
+    v = np.load(path)
+    out = defaultdict(dict)
+    for f, p, jv, vf in zip(v['frame'], v['pid'], v['joint_vis'], v['vis_frac']):
+        out[int(cosilab.session_frame(batch, int(f)))][int(p)] = jv & (vf >= min_vis_frac)
+    return out
+
+
+def box_costs(kp, rays, C, neighbours, sframe, args, vis=None):
     """
     Costs (N, P) of N boxes of one frame vs every person seen by a neighbour in that frame, nan without evidence.
     Also the body distance (N, P): the median distance (m) of the triangulated joints to the neighbour's 3D body of
     the person (neighbour_bodies), mean over the neighbours, nan without a body. It separates people that the ray gap
     can't, those in one plane through the (collinear) camera centres.
+    vis: {pid: joint_vis (17,)} of this frame (--visibility); only visible joints count, people without an entry get none.
     Returns (pids (P,), cost, n_joints (N, P), body distance).
     """
     seen = sorted({int(p) for nb in neighbours if sframe in nb['index'] for p in nb['index'][sframe][0]})
@@ -142,6 +162,8 @@ def box_costs(kp, rays, C, neighbours, sframe, args):
             continue
         pids, nkp, nrays = nb['index'][sframe]
         valid = (kp[:, None, :, 2] > args.kp_conf) & (nkp[None, :, :, 2] > args.kp_conf)  # (N, P', 17)
+        if vis is not None:
+            valid &= np.stack([vis.get(int(p), np.zeros(17, dtype=bool)) for p in pids])[None]
         gap = ray_gap(rays[:, None], nrays[None], nb['C'] - C)  # (N, P', 17)
         # ray_gap is the distance between lines: rays that only meet behind a camera get BEHIND_GAP instead
         X, s, u = triangulate(C, rays[:, None], nb['C'], nrays[None])
@@ -218,7 +240,7 @@ def id_check(args, assigned, camera, batch, neighbours_names):
     """Project the 2-camera multi-view bodies into this camera; px against the assigned keypoints of the same ID."""
     bodies = {}
     for nb in neighbours_names:
-        d = os.path.join(args.multi_root, nb, 'refined')
+        d = os.path.join(args.check_root or args.multi_root, nb, 'refined')
         if os.path.isdir(d):
             for pid, t in cosilab.load_results(os.path.dirname(d), 'refined')[1].items():
                 bodies.setdefault(pid, {})
@@ -294,12 +316,14 @@ def main(args):
     sframes = cosilab.session_frame(batch, frames)
     rays = world_rays(det['kp'], K, D, R)
     is_det = det['kind'] == 'detector'
+    vis = load_visibility(os.path.join(out_dir, 'visibility.npz'), batch, args.min_vis_frac) if args.visibility else None
 
     # costs per box (vs the people of its frame)
     costs = {}
     for f in np.unique(sframes):
         idx = np.nonzero(sframes == f)[0]
-        pids, cost, nj, bdist = box_costs(det['kp'][idx], rays[idx], C, neighbours, int(f), args)
+        pids, cost, nj, bdist = box_costs(det['kp'][idx], rays[idx], C, neighbours, int(f), args,
+                                          None if vis is None else vis.get(int(f), {}))
         for k, i in enumerate(idx):
             costs[i] = (pids, cost[k], nj[k], bdist[k])
 
@@ -433,6 +457,21 @@ def main(args):
         per_id[int(p)] = {'detector': n_d, 'fill_in': n_f, 'fill_in_rejected': int(rejected[p]),
                           'neighbour_frames': int(seen_by_nb[p])}
         print(f'  {p:3d}: {n_d:4d} / {n_f:4d}   rejected {rejected[p]:4d}   seen {seen_by_nb[p]:4d}')
+
+    # keypoints of joints hidden behind another person -> confidence 0
+    if vis is not None:
+        hidden = total = 0
+        for key, (kind, kp, i) in list(assigned.items()):
+            f, p = key
+            jv = vis.get(int(cosilab.session_frame(batch, f)), {}).get(p)
+            if jv is None:
+                continue
+            kp = kp.copy()
+            gone = (kp[:, 2] > args.kp_conf) & ~jv
+            hidden, total = hidden + gone.sum(), total + (kp[:, 2] > args.kp_conf).sum()
+            kp[~jv, 2] = 0
+            assigned[key] = (kind, kp, i)
+        print(f'  visibility: {hidden} of {total} confident keypoints ({hidden / max(total, 1):.3f}) set to 0 as hidden')
 
     # outputs
     ann = {}
