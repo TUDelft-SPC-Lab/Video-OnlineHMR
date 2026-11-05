@@ -239,9 +239,9 @@ def main(args):
     print('keypoint weight per view: ' + ', '.join(f'{v["name"]} {v["weight"]:g}' for v in views))
     smpl = SMPL().to(args.device)
 
-    ids = [p for p in sorted(views[0]['tracks']) if sum(p in v['tracks'] for v in views) >= 2]
-    ids += [p for v in views[1:] for p in sorted(v['tracks'])
-            if p not in ids and sum(p in u['tracks'] for u in views) >= 2]
+    ids = []  # in order of the first camera that sees them
+    for v in views:
+        ids += [p for p in sorted(v['tracks']) if p not in ids and sum(p in u['tracks'] for u in views) >= 2]
     print(f'{args.cam_batches}: {len(ids)} people in at least two cameras: {ids}', flush=True)
 
     for view in views:
