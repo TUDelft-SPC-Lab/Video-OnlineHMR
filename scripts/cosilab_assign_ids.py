@@ -97,22 +97,27 @@ def neighbour_index(view):
     return out
 
 
-def multiview_pids(args):
-    """People with a multi-view body under --multi_root."""
+def batch_dirs(root, batch):
+    """The camXX_batchYY folders of one batch under a results root."""
+    return [d for d in sorted(os.listdir(root)) if d.endswith(f'_batch{batch:02d}')] if os.path.isdir(root) else []
+
+
+def multiview_pids(args, batch):
+    """People with a multi-view body under --multi_root, in this batch."""
     pids = set()
-    for d in sorted(os.listdir(args.multi_root)) if os.path.isdir(args.multi_root) else []:
+    for d in batch_dirs(args.multi_root, batch):
         if os.path.isdir(os.path.join(args.multi_root, d, 'refined')):
             pids |= {p for p in cosilab.load_results(os.path.join(args.multi_root, d), 'refined')[1] if p >= 0}
     return pids
 
 
-def neighbour_bodies(args, nb_name, smpl):
+def neighbour_bodies(args, nb_name, smpl, batch):
     """
     {session frame: {pid: ConfLab joints (17, 3)}} of a neighbour's people in the world frame: the multi-view body
     (--multi_root) where one exists, otherwise the neighbour's single-view refined body (--hmr_root/<nb>/refined).
     """
     multi = {}
-    for d in sorted(os.listdir(args.multi_root)) if os.path.isdir(args.multi_root) else []:
+    for d in batch_dirs(args.multi_root, batch):
         if os.path.isdir(os.path.join(args.multi_root, d, 'refined')):
             for pid, t in cosilab.load_results(os.path.join(args.multi_root, d), 'refined')[1].items():
                 multi.setdefault(pid, []).append(t)
@@ -305,11 +310,11 @@ def main(args):
     for name in nb_names:
         v = load_view(args.hmr_root, name)
         v['index'] = neighbour_index(v)
-        v['bodies'] = neighbour_bodies(args, name, smpl)
+        v['bodies'] = neighbour_bodies(args, name, smpl, batch)
         neighbours.append(v)
         print(f'{name}: {len(v["tracks"])} people, camera {np.linalg.norm(v["C"] - C):.2f} m away')
 
-    mv_pids = multiview_pids(args)
+    mv_pids = multiview_pids(args, batch)
     print(f'people with a multi-view body (body-distance gate {args.max_body_dist_mv} m, else {args.max_body_dist} m): '
           f'{sorted(mv_pids)}')
     frames = det['frame'].astype(int)
