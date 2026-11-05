@@ -2,7 +2,7 @@
 Joint fit of a side camera's extrinsics to (a) its Calibrator board corners, board poses fixed in the project's origin
 camera frame and mapped to world by that camera's 4TU pose, and (b) the people: Hungarian-matched joints of clearly
 visible people (cosilab_refit_extrinsic.Data), IRLS weights on the people only. Board residuals are not robustified. Sweeps the board weight.
-Usage: joint_fit.py cam out.json
+Usage: joint_fit.py cam out.json [pid,pid,...]  (only these people in the people term)
 """
 import json, sys, types
 import numpy as np, cv2
@@ -54,12 +54,13 @@ def to_rt(x):
 
 def main():
     cam, out_path = int(sys.argv[1]), sys.argv[2]
+    pids = [int(x) for x in sys.argv[3].split(',')] if len(sys.argv) > 3 else None  # e.g. 2,11,12,14
     k = cosilab.load_camera(cosilab.DATA_ROOT, cam, use_refit=False)
     K, D = k['K'], k['D']
     Xb, ub = board_points(cam)
     a = types.SimpleNamespace(multi_root=f'{E}/cosilab_multiview_4cam', single_root=f'{E}/cosilab_smpl', kp_conf=0.3,
                               det_dir=f'{E}/cosilab_vit003_extra', neighbours=None, start=6000, num_frames=600, every=10,
-                              all_people=False, occ_depth=0.3, max_occ=0.2)
+                              all_people=False, occ_depth=0.3, max_occ=0.2, pids=pids)
     data = Data(a, cam, 1)
     data.n_ref = sum(len(J) for J, *_ in data.per_frame(k['rvec'], k['t_w2c'], K, D))
     x0 = np.r_[k['rvec'], -k['R_w2c'].T @ k['t_w2c']]

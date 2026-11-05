@@ -119,3 +119,38 @@ README), i.e. the `timecode_fixed` ones the user says are wrong.
 
 `lib/utils/cosilab.load_camera(..., use_refit=True)` reads refit extrinsics for cams 12/14 from
 `.../Video-OnlineHMR/cosilab_side_calibration/` (off by default; no refit is saved).
+
+## Update (2026-11-05, second round)
+Result files are in `cosilab_calib_12_14/`: `shake_offsets.npz`, `calib_frame_times.json`, `flip_boards.json`,
+`per_person_error.log`, `joint_valid_*.{json,log}` and `refit_valid_*.log`.
+6. **Shake** (`shake_offsets.py`): the per-frame 2D shift that best aligns the projected people.
+   - cam13/15 (controls) wander by 6–7 px (p90), with frame-to-frame steps of 1.6 px.
+   - cam14 has a mostly constant shift of about (−29, +9) px, with steps of 2.9 px. Applying it constantly only lifts
+     cam14 from 0.20 to 0.31 within 40 px.
+   - cam12 has no stable peak.
+   - So there's no large shake in this clip; the user asked to ignore shake from here.
+7. **The calibration frames are simultaneous in world time** (`calib_frame_times.py`). Each PNG was matched to its raw
+   video frame by pixel difference.
+   - Per-camera raw-timecode offsets: −11 (01), −18 (04), −28 (12), −60 (13), −40 (14), −52 (15). These are exactly
+     each camera's drift correction.
+   - Converted to world time, all cameras agree within about 1 tick for every frame. **The open hypothesis above (calib
+     frames from the wrong timecode_fixed videos) is rejected.**
+8. **The 180° board ambiguity is not it** (`flip_boards.py`):
+   - Reversing the corner order gives about 35 px on the boards for cam12/14.
+   - With the order chosen per frame by RANSAC, every view keeps the project's order.
+   - All 12 cam12 views agree on one pose at 0.45 px, so it isn't a few views of the wrong (identical) board either.
+9. **Per person** (`per_person_error.py`):
+   - People seen only by cams 03/04 (1, 7, 23, 27, 31) fail in **every** side camera, including cam13/15: e.g. person 31
+     at 198 / 139 px. **The 3D bodies at the cam04 end of the room are bad.**
+   - Validated people fit cam13/15 at 10–20 px but not cam12/14: person 22 (cams 01–03) misses by 161 / 214 px.
+   - In cam14, people 24 and 30 fit well (0.97 / 0.94) and 22 doesn't, so the error depends on position.
+10. **Fits with validated people only** (2, 11, 12, 14, 18, 22, 24, 25, 28, 30; `--pids`, `joint_fit.py ... pids`):
+    - **cam13** people-only stays put, 0.75 → 0.78. Its joint fit is unusable as a control: some bad cam13 board views
+      pull it 2.3 m.
+    - **cam12:** board-consistent poses give 0.09. People-only gives 0.36, but by moving 2.0 m and 21°.
+    - **cam14:** board-consistent poses give 0.36–0.38. People-only gives 0.57, by moving 0.9 m and 17°.
+    - No pose satisfies both.
+
+**What's left** (2026-11-05): manual static-point correspondences for cam12/14; a full joint Calibrator calibration of
+all top and side cameras in one project, instead of the two 3-camera projects chained through cam04 and cam01; or
+parking cam12/14.

@@ -64,6 +64,8 @@ def parse_args(argv=None):
     parser.add_argument('--passes', type=int, default=1,
                         help='later passes restart from the kept pose with a +-20 deg yaw/pitch/roll grid')
     parser.add_argument('--all_people', action='store_true', help='also use people occluded under the tested pose')
+    parser.add_argument('--pids', type=int, nargs='*', default=None,
+                        help='only these people (e.g. those whose bodies fit the well-calibrated side cameras)')
     parser.add_argument('--occ_depth', type=float, default=0.3, help='m closer before another person occludes')
     parser.add_argument('--max_occ', type=float, default=0.2, help='max covered share of a visible person\'s box')
     parser.add_argument('--no_save', action='store_true')
@@ -100,7 +102,8 @@ class Data:
         a = types.SimpleNamespace(multi_root=args.multi_root, single_root=args.single_root, kp_conf=args.kp_conf)
         best = collect_bodies(a, args.neighbours or cosilab.NEIGHBOURS[cam], batch, args.start,
                               args.start + args.num_frames)
-        keys = [k for k in sorted(best) if (k[0] - args.start) % args.every == 0]
+        pids = getattr(args, 'pids', None)
+        keys = [k for k in sorted(best) if (k[0] - args.start) % args.every == 0 and (not pids or k[1] in pids)]
         rows = [best[k] for k in keys]
         with torch.no_grad():
             J = SMPL()(global_orient=torch.tensor(np.stack([d['world_rotmat_root'][i] for *_, d, i in rows]))[:, None],
