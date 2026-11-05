@@ -5,6 +5,8 @@ Layout under DATA_ROOT (the `processed/` folder of the 4TU upload):
     keypoints/vitpose_results/camXX_batchYY/vitpose_keypoints.json
     videos/mingling_session_videos/camXX.mp4
     videos/camera_calibration/idiap_params/{intrinsics,mingling_1_top,mingling_2_top}/
+The side cameras 12-15 are not in the 4TU upload. Their raw GoPro files and calibration are next to it, under
+cosilab_project/{raw_sensor_data,processed_data}/gopro_data/ (see SIDE_CAMS).
 """
 
 import json
@@ -19,6 +21,24 @@ DATA_ROOT = '/tudelft.net/staff-umbrella/neon/cosilab_project/4TU_upload/process
 FPS = 60000 / 1001
 BATCH_FRAMES = 18000  # each batch is 5 min of the session video
 KP_SCALE = 2.0  # the ViTPose results are in 960x540, the videos are 1920x1080
+# Side cameras: in both sessions, with the same numbers. A cam number alone does not give the session, so the
+# side cameras are taken from SIDE_SESSION (only session 2 is processed so far).
+SIDE_CAMS = (12, 13, 14, 15)
+SIDE_SESSION = 2
+# Their timestamp CSVs (not in the dataset), written by scripts/cosilab_side_timestamps.py
+SIDE_TIMESTAMP_ROOT = '/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR/cosilab_side_timestamps'
+
+
+def cam_session(cam):
+    """Session of a camera: top 01-05 -> 2, top 06-10 -> 1, side 12-15 -> SIDE_SESSION."""
+    if cam in SIDE_CAMS:
+        return SIDE_SESSION
+    return 1 if 6 <= cam <= 10 else 2
+
+
+def project_root(data_root):
+    """cosilab_project/, two levels above the 4TU processed/ folder."""
+    return os.path.dirname(os.path.dirname(os.path.normpath(data_root)))
 
 # The ViTPose results (dataset and scripts/run_cosilab_vitpose.py) use the ConfLab-17 layout, not COCO: head, nose,
 # neck, R/L shoulder-elbow-wrist, R/L hip-knee-ankle, R/L foot. Indices into the 49 SPIN joints of
@@ -30,12 +50,12 @@ CONFLAB_FLIP_PAIRS = [(3, 6), (4, 7), (5, 8), (9, 12), (10, 13), (11, 14), (15, 
 
 
 def parse_cam_batch(cam_batch):
-    """'cam01_batch03' -> (cam=1, batch=3, session=2). Session 1 has cameras 06-10, session 2 has 01-05."""
+    """'cam01_batch03' -> (cam=1, batch=3, session=2). Session 1 has top cameras 06-10, session 2 has 01-05."""
     m = re.fullmatch(r'cam(\d+)_batch(\d+)', cam_batch)
     if m is None:
         raise ValueError(f'Expected camXX_batchYY, got {cam_batch}')
     cam, batch = int(m.group(1)), int(m.group(2))
-    return cam, batch, 1 if cam >= 6 else 2
+    return cam, batch, cam_session(cam)
 
 
 def session_frame(batch, key):
@@ -53,7 +73,10 @@ def video_path(data_root, cam):
     return os.path.join(data_root, 'videos', 'mingling_session_videos', f'cam{cam:02d}.mp4')
 
 
-def calib_root(data_root):
+def calib_root(data_root, cam=None):
+    if cam in SIDE_CAMS:
+        return os.path.join(project_root(data_root), 'processed_data', 'gopro_data', 'side_view_camera_calibration',
+                            'idiap_params')
     return os.path.join(data_root, 'videos', 'camera_calibration', 'idiap_params')
 
 
@@ -61,16 +84,17 @@ def load_camera(data_root, cam, extrinsic_c2w=False):
     """
     Load the fisheye intrinsics and the session extrinsics of a camera.
     The extrinsics are read as OpenCV world->camera (X_c = R X_w + t) unless extrinsic_c2w is set.
-    The world frame is the frame of camera 06 (session 1) or camera 01 (session 2).
+    The world frame is the frame of camera 06 (session 1) or camera 01 (session 2), for the side cameras too.
     Camera 05 has no extrinsics; R_w2c and t_w2c are then None.
     """
-    root = calib_root(data_root)
+    root = calib_root(data_root, cam)
     with open(os.path.join(root, 'intrinsics', f'camera_{cam:02d}', 'intrinsic.json')) as f:
         intr = json.load(f)
-    session = 1 if cam >= 6 else 2
+    session = cam_session(cam)
     # the session 1 folders use 'camera-XX', the session 2 folders 'camera_XX'
     sep = '-' if session == 1 else '_'
-    extr_file = os.path.join(root, f'mingling_{session}_top', f'camera{sep}{cam:02d}', 'extrinsic.json')
+    view = 'side' if cam in SIDE_CAMS else 'top'
+    extr_file = os.path.join(root, f'mingling_{session}_{view}', f'camera{sep}{cam:02d}', 'extrinsic.json')
 
     camera = {
         'cam': cam,
@@ -98,7 +122,7 @@ def load_camera(data_root, cam, extrinsic_c2w=False):
 
 
 def session_cameras(data_root, session, extrinsic_c2w=False):
-    """All cameras of a session that have extrinsics."""
+    """All top cameras of a session that have extrinsics."""
     cams = range(6, 11) if session == 1 else range(1, 6)
     cameras = [load_camera(data_root, c, extrinsic_c2w) for c in cams]
     return [c for c in cameras if c['R_w2c'] is not None]
@@ -176,12 +200,16 @@ class VideoReader:
 
 REFERENCE_CAM = {1: 6, 2: 1}  # the camera whose world_time.csv maps session frames to world time
 # Cameras without dataset keypoints -> their neighbours in the camera row that have them. Camera 05 is left out (bad camera).
-NEIGHBOURS = {2: (1, 3), 4: (3,), 7: (6, 8), 9: (8, 10)}
+# Side cameras use all the top cameras of the session.
+NEIGHBOURS = {2: (1, 3), 4: (3,), 7: (6, 8), 9: (8, 10), **{c: (1, 2, 3, 4) for c in SIDE_CAMS}}
 
 
 def raw_video_dir(data_root, cam):
     """Folder of the raw GoPro files GH0*.MP4 of a camera (raw/ is next to processed/)."""
-    session = 1 if cam >= 6 else 2
+    session = cam_session(cam)
+    if cam in SIDE_CAMS:  # not in the 4TU upload
+        return os.path.join(project_root(data_root), 'raw_sensor_data', 'gopro_data',
+                            f'side_view_camera-mingle_session_{session}', f'camera_{cam:02d}-mingle_session_{session}')
     return os.path.join(os.path.dirname(os.path.normpath(data_root)), 'raw', 'video',
                         f'top_view_camera-mingle_session_{session}', f'camera_{cam:02d}-mingle_session_{session}')
 
@@ -191,14 +219,70 @@ def _seconds(stamps):
     return np.array([int(s[:2]) * 3600 + int(s[3:5]) * 60 + float(s[6:]) for s in stamps])
 
 
+def _timecode_frames(tc):
+    """'HH:MM:SS:FF' (60 frames per timecode second) -> frames since midnight."""
+    h, m, s, f = map(int, tc.split(':'))
+    return ((h * 60 + m) * 60 + s) * 60 + f
+
+
+def _format_timecode(n):
+    s, f = divmod(int(n), 60)
+    return f'{s // 3600:02d}:{s // 60 % 60:02d}:{s % 60:02d}:{f:02d}'
+
+
+def _format_timestamp(n):
+    s, f = divmod(int(n), 60)
+    return f'{s // 3600:02d}:{s // 60 % 60:02d}:{s % 60:02d}.{round(f * 1e6 / 60):06d}'
+
+
+def tag_timestamps(video_dir):
+    """
+    Per-file timestamp rows of a raw GoPro folder, from the MP4 timecode tags, as in the 4TU
+    processed/videos/timestamps CSVs: [(name.csv, [(original_timecode, world_timecode, world_timestamp), ...])].
+    The rule reproduces the 4TU CSVs of cameras 01-04 row for row: original = file tag + row (60 per timecode
+    second); world = first file's tag + round-half-even(global frame * 1.001) ticks of 1/60 s (59.94 fps drift).
+    Stops at the first file ffprobe can't read.
+    """
+    names = sorted(n for n in os.listdir(video_dir) if re.fullmatch(r'GH\d+\.MP4', n))
+    out, g, prev_end, start = [], 0, None, None
+    for name in names:
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+             'stream=nb_frames:stream_tags=timecode', '-of', 'json', os.path.join(video_dir, name)],
+            capture_output=True, text=True)
+        if probe.returncode != 0:  # e.g. cam01 GH080189.MP4, also left out of the 4TU CSVs
+            print(f'[Warning] {video_dir}/{name} is unreadable; it and later files get no timestamps', flush=True)
+            break
+        stream = json.loads(probe.stdout)['streams'][0]
+        n0, count = _timecode_frames(stream['tags']['timecode']), int(stream['nb_frames'])
+        if prev_end is not None and n0 != prev_end:
+            raise RuntimeError(f'{video_dir}/{name}: timecode tag does not continue the previous file')
+        start = n0 if start is None else start
+        world = start + np.round((g + np.arange(count)) * 1001 / 1000).astype(np.int64)
+        out.append((name.replace('.MP4', '.csv'),
+                    [(_format_timecode(n0 + i), _format_timecode(w), _format_timestamp(w)) for i, w in enumerate(world)]))
+        g, prev_end = g + count, n0 + count
+    return out
+
+
+def timestamp_dir(data_root, cam, session=None):
+    """The per-file timestamp CSVs: the 4TU ones, or for the side cameras those of scripts/cosilab_side_timestamps.py."""
+    session = session or cam_session(cam)
+    sub = os.path.join(f'mingle_session_{session}', f'camera_{cam:02d}-mingle_session_{session}')
+    if cam in SIDE_CAMS:
+        return os.path.join(SIDE_TIMESTAMP_ROOT, sub)
+    return os.path.join(data_root, 'videos', 'timestamps', sub)
+
+
 def raw_frame_table(data_root, cam, session=None):
     """
     For every session frame, the raw GoPro frame of camera `cam` nearest in world time.
     Session frame -> world time from the reference camera's keypoints/vitpose_dataframe/camXX_world_time.csv,
-    world time -> raw frame from processed/videos/timestamps/mingle_session_S/camera_XX-*/GH0*.csv (one row per frame).
+    world time -> raw frame from processed/videos/timestamps/mingle_session_S/camera_XX-*/GH0*.csv (one row per frame;
+    side cameras: SIDE_TIMESTAMP_ROOT, made from the timecode tags by scripts/cosilab_side_timestamps.py).
     Returns {'files': [GH0*.MP4 names], 'file': (N,) index into files, 'raw_frame': (N,), 'dt': (N,) s}.
     """
-    session = session or (1 if cam >= 6 else 2)
+    session = session or cam_session(cam)
     ref = os.path.join(data_root, 'keypoints', 'vitpose_dataframe', f'cam{REFERENCE_CAM[session]:02d}_world_time.csv')
     with open(ref) as f:
         header = f.readline().strip().split(',')
@@ -206,8 +290,7 @@ def raw_frame_table(data_root, cam, session=None):
     assert [int(r[0]) for r in rows[:2]] == [0, 1], ref
     session_time = _seconds([r[header.index('world_timestamp')] for r in rows])
 
-    ts_dir = os.path.join(data_root, 'videos', 'timestamps', f'mingle_session_{session}',
-                          f'camera_{cam:02d}-mingle_session_{session}')
+    ts_dir = timestamp_dir(data_root, cam, session)
     names = sorted(n for n in os.listdir(ts_dir) if re.fullmatch(r'GH\d+\.csv', n))
     times, file_idx, frame_idx = [], [], []
     for i, name in enumerate(names):

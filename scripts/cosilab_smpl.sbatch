@@ -22,7 +22,7 @@ cd "${SLURM_SUBMIT_DIR:-.}"
 [ -x apptainer/run.sh ] || { echo "Submit from the repo root"; exit 1; }
 
 DATASET=/tudelft.net/staff-umbrella/neon/cosilab_project/4TU_upload
-CAM_BATCHES=($(ls "$DATASET/processed/keypoints/vitpose_results"))
+CAM_BATCHES=(${CAM_BATCH_LIST:-$(ls "$DATASET/processed/keypoints/vitpose_results")})  # CAM_BATCH_LIST="..." overrides
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 if [ -z "${CAM_BATCH:-}" ]; then
     [ "$TASK_ID" -lt "${#CAM_BATCHES[@]}" ] || { echo "No cam-batch for array index $TASK_ID"; exit 1; }
@@ -32,5 +32,6 @@ echo "Array task $TASK_ID: $CAM_BATCH"
 nvidia-smi -L
 
 # Mount the dataset read-only; apptainer adds APPTAINER_BIND to the binds of apptainer/run.sh
-export APPTAINER_BIND="$DATASET:$DATASET:ro"
+PROJECT=$(dirname "$DATASET")  # side cameras: raw files and calibration outside the 4TU upload
+export APPTAINER_BIND="$DATASET:$DATASET:ro,$PROJECT/raw_sensor_data:$PROJECT/raw_sensor_data:ro,$PROJECT/processed_data:$PROJECT/processed_data:ro"
 exec apptainer/run.sh python scripts/run_cosilab_smpl.py --cam_batch "$CAM_BATCH" "$@"

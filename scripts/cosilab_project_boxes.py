@@ -61,7 +61,8 @@ def collect_bodies(args, neighbours, batch, start, end):
         nb = f'cam{cam:02d}_batch{batch:02d}'
         multi_dir = os.path.join(args.multi_root, nb)
         multi = cosilab.load_results(multi_dir, 'refined')[1] if os.path.isdir(os.path.join(multi_dir, 'refined')) else {}
-        single = cosilab.load_results(os.path.join(args.single_root, nb), 'refined')[1]
+        single_dir = os.path.join(args.single_root, nb)  # cameras without dataset keypoints have no refined bodies
+        single = cosilab.load_results(single_dir, 'refined')[1] if os.path.isdir(os.path.join(single_dir, 'refined')) else {}
         print(f'{nb}: {len(multi)} multi-view bodies {sorted(multi)}, {len(single)} single-view {sorted(single)}')
         for kind, tracks in [('multiview', multi), (f'single:{nb}', single)]:
             rank = 1 if kind == 'multiview' else 0  # multi-view wins over any single-view body

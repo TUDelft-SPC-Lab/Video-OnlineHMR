@@ -15,5 +15,7 @@ set -euo pipefail
 
 cd "${SLURM_SUBMIT_DIR:-.}"
 [ -x apptainer/run.sh ] || { echo "Submit from the repo root"; exit 1; }
+PROJECT=/tudelft.net/staff-umbrella/neon/cosilab_project  # videos and calibration for the overlays, read-only
+export APPTAINER_BIND="$PROJECT/4TU_upload:$PROJECT/4TU_upload:ro,$PROJECT/raw_sensor_data:$PROJECT/raw_sensor_data:ro,$PROJECT/processed_data:$PROJECT/processed_data:ro"
 nvidia-smi -L
 exec apptainer/run.sh python scripts/run_cosilab_multiview.py "$@"
