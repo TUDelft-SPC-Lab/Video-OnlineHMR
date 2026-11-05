@@ -64,12 +64,20 @@ def parse_args(argv=None):
     parser.add_argument('--passes', type=int, default=1,
                         help='later passes restart from the kept pose with a +-20 deg yaw/pitch/roll grid')
     parser.add_argument('--all_people', action='store_true', help='also use people occluded under the tested pose')
+    parser.add_argument('--clips', type=str, nargs='*', default=None,
+                        help='batch:start clips pooled together, e.g. 1:6000 2:6000 3:6000 (default: --cam_batch at --start)')
+    parser.add_argument('--min_cams', type=int, default=0, help='only people seen by this many cameras in the fit')
+    parser.add_argument('--need_cams', type=int, nargs='*', default=None, help='... one of them among these')
+    parser.add_argument('--pids_json', type=str, default=None,
+                        help='{batch: [pids]} of validated people per clip (scripts/cosilab_calib_12_14/per_person_error.py)')
     parser.add_argument('--pids', type=int, nargs='*', default=None,
                         help='only these people (e.g. those whose bodies fit the well-calibrated side cameras)')
     parser.add_argument('--occ_depth', type=float, default=0.3, help='m closer before another person occludes')
     parser.add_argument('--max_occ', type=float, default=0.2, help='max covered share of a visible person\'s box')
     parser.add_argument('--no_save', action='store_true')
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.clips = [tuple(map(int, c.split(':'))) for c in args.clips] if args.clips else None
+    return args
 
 
 def project(X, rvec, tvec, K, D):
@@ -95,15 +103,51 @@ def clearly_visible(u, front, dist, occ_depth, max_occ, pad=0.15):
     return front.all(1) & inside & (covered <= max_occ)
 
 
+def well_seen(multi_root, batch, min_cams, need_cams):
+    """People of a batch's multi-view fit seen by >= min_cams cameras, at least one of them in need_cams."""
+    seen = {}
+    for d in sorted(os.listdir(multi_root)):
+        m = d.endswith(f'_batch{batch:02d}') and os.path.isdir(os.path.join(multi_root, d, 'refined'))
+        if m:
+            cam = int(d[3:5])
+            for name in os.listdir(os.path.join(multi_root, d, 'refined')):
+                if name.startswith('track_') and not name.startswith('track_-'):
+                    seen.setdefault(int(name[6:-4]), set()).add(cam)
+    return {p for p, c in seen.items() if len(c) >= min_cams and (not need_cams or c & set(need_cams))}
+
+
 class Data:
-    """Per used frame: world joints (P, 17, 3) and detected keypoints (B, 17, 3) of the detector boxes."""
+    """
+    Per used frame: world joints (P, 17, 3) and detected keypoints (B, 17, 3) of the detector boxes.
+    args.clips: [(batch, first batch frame)] pooled together (default: the cam_batch's batch at args.start).
+    args.pids: only these people; args.min_cams / args.need_cams: only people of each clip's multi-view fit seen by that
+    many cameras, one of them in need_cams (e.g. the well-calibrated side cameras 13, 15).
+    """
 
     def __init__(self, args, cam, batch):
+        self.frames = []
+        for b, start in getattr(args, 'clips', None) or [(batch, args.start)]:
+            self.frames += self.load_clip(args, cam, b, start)
+        self.X = np.concatenate([j.reshape(-1, 3) for j, _ in self.frames])
+        self.all_people, self.occ_depth, self.max_occ = args.all_people, args.occ_depth, args.max_occ
+        self.n_ref = 0  # visible person-frames under the stored pose, set in main
+        print(f'{len(self.frames)} frames, {sum(len(j) for j, _ in self.frames)} person-frames, '
+              f'{sum(len(k) for _, k in self.frames)} detector boxes', flush=True)
+
+    @staticmethod
+    def load_clip(args, cam, batch, start):
         a = types.SimpleNamespace(multi_root=args.multi_root, single_root=args.single_root, kp_conf=args.kp_conf)
-        best = collect_bodies(a, args.neighbours or cosilab.NEIGHBOURS[cam], batch, args.start,
-                              args.start + args.num_frames)
-        pids = getattr(args, 'pids', None)
-        keys = [k for k in sorted(best) if (k[0] - args.start) % args.every == 0 and (not pids or k[1] in pids)]
+        best = collect_bodies(a, args.neighbours or cosilab.NEIGHBOURS[cam], batch, start, start + args.num_frames)
+        pids = set(getattr(args, 'pids', None) or [])
+        if getattr(args, 'pids_json', None):
+            pids = set(json.load(open(args.pids_json))[str(batch)])
+            print(f'batch{batch:02d}: validated people {sorted(pids)}', flush=True)
+        if getattr(args, 'min_cams', 0):
+            good = well_seen(args.multi_root, batch, args.min_cams, getattr(args, 'need_cams', None))
+            pids = (pids & good) if pids else good
+            print(f'batch{batch:02d}: {len(good)} people seen by >= {args.min_cams} cameras '
+                  f'(one of {getattr(args, "need_cams", None)}): {sorted(good)}', flush=True)
+        keys = [k for k in sorted(best) if (k[0] - start) % args.every == 0 and (not pids or k[1] in pids)]
         rows = [best[k] for k in keys]
         with torch.no_grad():
             J = SMPL()(global_orient=torch.tensor(np.stack([d['world_rotmat_root'][i] for *_, d, i in rows]))[:, None],
@@ -114,16 +158,12 @@ class Data:
         fr = np.array([k[0] for k in keys])
         det = np.load(os.path.join(args.det_dir, f'cam{cam:02d}_batch{batch:02d}', 'detections.npz'))
         is_det = det['kind'] == 'detector'
-        self.frames = []
+        frames = []
         for f in np.unique(fr):
             kp = det['kp'][is_det & (det['frame'] == f)].astype(np.float64)
             if len(kp):
-                self.frames.append((J[fr == f], kp))
-        self.X = np.concatenate([j.reshape(-1, 3) for j, _ in self.frames])
-        self.all_people, self.occ_depth, self.max_occ = args.all_people, args.occ_depth, args.max_occ
-        self.n_ref = 0  # visible person-frames under the stored pose, set in main
-        print(f'{len(self.frames)} frames, {sum(len(j) for j, _ in self.frames)} person-frames, '
-              f'{sum(len(k) for _, k in self.frames)} detector boxes', flush=True)
+                frames.append((J[fr == f], kp))
+        return frames
 
     def per_frame(self, rvec, tvec, K, D):
         """Per frame: world joints, detected keypoints, projected joints and in-front mask of the people used."""
