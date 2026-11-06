@@ -3,6 +3,7 @@ Joint fit of a side camera's extrinsics to (a) its Calibrator board corners, boa
 camera frame and mapped to world by that camera's 4TU pose, and (b) the people: Hungarian-matched joints of clearly
 visible people (cosilab_refit_extrinsic.Data), IRLS weights on the people only. Board residuals are not robustified. Sweeps the board weight.
 Usage: joint_fit.py cam out.json [pid,pid,...]  (only these people in the people term)
+       joint_fit.py cam out.json --pids_json validated_people.json --clips 1:6000 2:6000 3:6000  (several clips)
 """
 import json, sys, types
 import numpy as np, cv2
@@ -53,14 +54,24 @@ def to_rt(x):
 
 
 def main():
-    cam, out_path = int(sys.argv[1]), sys.argv[2]
-    pids = [int(x) for x in sys.argv[3].split(',')] if len(sys.argv) > 3 else None  # e.g. 2,11,12,14
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('cam', type=int)
+    ap.add_argument('out')
+    ap.add_argument('pids', nargs='?', default=None, help='e.g. 2,11,12,14')
+    ap.add_argument('--pids_json', default=None)
+    ap.add_argument('--clips', nargs='*', default=None, help='batch:start ...')
+    o = ap.parse_args()
+    cam, out_path = o.cam, o.out
+    pids = [int(x) for x in o.pids.split(',')] if o.pids else None
+    clips = [tuple(map(int, c.split(':'))) for c in o.clips] if o.clips else None
     k = cosilab.load_camera(cosilab.DATA_ROOT, cam, use_refit=False)
     K, D = k['K'], k['D']
     Xb, ub = board_points(cam)
     a = types.SimpleNamespace(multi_root=f'{E}/cosilab_multiview_4cam', single_root=f'{E}/cosilab_smpl', kp_conf=0.3,
                               det_dir=f'{E}/cosilab_vit003_extra', neighbours=None, start=6000, num_frames=600, every=10,
-                              all_people=False, occ_depth=0.3, max_occ=0.2, pids=pids)
+                              all_people=False, occ_depth=0.3, max_occ=0.2, pids=pids,
+                              pids_json=o.pids_json, clips=clips)
     data = Data(a, cam, 1)
     data.n_ref = sum(len(J) for J, *_ in data.per_frame(k['rvec'], k['t_w2c'], K, D))
     x0 = np.r_[k['rvec'], -k['R_w2c'].T @ k['t_w2c']]

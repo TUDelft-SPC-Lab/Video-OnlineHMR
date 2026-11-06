@@ -154,3 +154,37 @@ Result files are in `cosilab_calib_12_14/`: `shake_offsets.npz`, `calib_frame_ti
 **What's left** (2026-11-05): manual static-point correspondences for cam12/14; a full joint Calibrator calibration of
 all top and side cameras in one project, instead of the two 3-camera projects chained through cam04 and cam01; or
 parking cam12/14.
+
+## Update (2026-11-06, third round: more data from batch02/03)
+Pipeline re-run for batch02 and batch03 (frames 6000–6600, i.e. 5 and 10 min later), up to the 4-camera bodies:
+- HMR cam01/03 `--refine` (job 102901), 2-camera fits (102902/3), proposals and detection for cam02/04 (102969),
+  ID assignment (CPU; cam04 ID check vs the 2-camera bodies: median 46/48 px, only people 5 and 8 checkable),
+  HMR cam02/04 (103192), 4-camera fits (103193/4, `cosilab_multiview_4cam/cam0X_batch0{2,3}`).
+- Side cams 12–15: proposals from the 4-camera bodies, detection (103597; 103302 failed on an expired Kerberos ticket).
+- Validated people (`per_person_error.py --valid_json`, fit cam13 or cam15 at >= 0.6 within 40 px): batch02
+  [14, 18, 21, 22, 25, 29, 31], batch03 [5, 11, 13, 14, 18, 21, 22, 25, 29, 31] (+ batch01's 9).
+
+11. **Refits with 3x the data do not converge on a good pose** (`refit_3clips_cam*.log`, `joint_3clips_cam*.log`):
+    - people-only, 3 clips, validated people: cam12 0.36 → 0.46 (moves 0.85 m, 10°), cam14 0.25 → 0.31 (0.88 m, 11°);
+      control cam13 0.79 → 0.81 (0.12 m, 1.4°).
+    - joint board + people: cam12 at most 0.42 at 20 px board error; cam14 0.28 at 21 px board error.
+    - rotation only, centre from the boards (`rot_fit.py`): cam12 0.42 (3.6°, boards 28 px), cam14 0.29 (1.5°, 20 px).
+12. **The stored cam12/14 extrinsics are close; the bodies near cams 12/14 are the problem**:
+    - Stored pose, validated people, per clip: cam12 0.09 / 0.44 / 0.76 (median 156 / 46 / 25 px) for batch01/02/03;
+      cam13 0.75 / 0.79 / 0.82. Same camera, same file for b1/b2 (GH020078), no file boundary in any clip.
+    - Per person, signed offset detected − projected (`per_person_error.py`, `per_person_offsets_b*.log`): in batch01
+      the cam12 offsets are unrelated between people (22: (−98, +124), 31: (−15, −28), 18: (+10, +19)), so it is not a
+      camera move. Person 22 stands at the same spot in all clips: 161 px in b1, 19–20 px in b2/b3. In b1, person 1
+      (cams 03/04 only, its own offset (−61, −117)) stands 2.1 m from cam12, ~6° off the line to 22: an occluder that
+      the visibility test misses because person 1's body is wrong.
+    - Well-reconstructed, unoccluded people fit the stored pose: cam12 22 (b2, b3), 20 and 31 (b3), 18 (b1) within
+      ~25 px, offsets −6..−23 / +1..+13 px; cam14 1 (b2), 11 (b3) at 14–16 px, people at the cam04 end (24, 30) ~30 px.
+    - Per-batch image shift (`shake_offsets.py --batch`): cam12 steady (−15, +3) px in b3 (spread 14 px), chaotic
+      in b1; cam14 (−25..−29, +10..+22) in all three; cam13/15 < 7 px.
+    - Time-offset scan ±5 s (`time_scan.py`, BATCH=1..3): flat for all cams (mingling people barely move), so timing can
+      neither explain nor be measured from these errors.
+
+**Conclusion:** the ~300 px "calibration error" of cam12/14 came from the 3D bodies at the cam04 end of the room
+(seen only by cams 03/04) and from occlusions that those wrong bodies hide from the visibility test, not from the
+extrinsics. The stored (board) extrinsics are within ~15–30 px. Next: use cam12/14 with the stored extrinsics like
+13/15; their views cover exactly the region where the top-camera bodies are weak.

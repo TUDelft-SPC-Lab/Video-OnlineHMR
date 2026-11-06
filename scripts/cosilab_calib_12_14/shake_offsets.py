@@ -3,7 +3,7 @@ Is the camera shaking? Per frame, the 2D shift that best aligns the projected 4-
 stored extrinsics) with the detected VIT003 keypoints: a vote over all same-joint displacements within --radius px
 (2D histogram peak, then the median of the displacements near the peak). A shaking camera gives a shift that changes
 over time, common to all people of a frame; a still, well-calibrated one a small constant shift.
-Usage (repo root, container): python scripts/cosilab_calib_12_14/shake_offsets.py out.npz 13 15 12 14
+Usage (repo root, container): python scripts/cosilab_calib_12_14/shake_offsets.py out.npz 13 15 12 14 [--batch 2]
 """
 import sys, types
 import numpy as np
@@ -47,13 +47,16 @@ def frame_shift(u, kp):
 
 
 def main():
+    batch = 1
+    if '--batch' in sys.argv:
+        i = sys.argv.index('--batch'); batch = int(sys.argv[i + 1]); del sys.argv[i:i + 2]
     out, cams = sys.argv[1], [int(c) for c in sys.argv[2:]]
     res = {}
     for cam in cams:
         a = types.SimpleNamespace(multi_root=f'{E}/cosilab_multiview_4cam', single_root=f'{E}/cosilab_smpl', kp_conf=0.3,
                                   det_dir=f'{E}/cosilab_vit003_extra', neighbours=None, start=6000, num_frames=600, every=1,
                                   all_people=False, occ_depth=0.3, max_occ=0.2)
-        data = Data(a, cam, 1)
+        data = Data(a, cam, batch)
         k = cosilab.load_camera(cosilab.DATA_ROOT, cam)
         frames = sorted({0})  # placeholder to keep order
         rows = []
@@ -65,7 +68,7 @@ def main():
         s = rows[:, 1:3]
         step = np.linalg.norm(np.diff(s, axis=0), axis=1)
         mag = np.linalg.norm(s, axis=1)
-        print(f'cam{cam}: {len(rows)} frames; shift median ({np.median(s[:, 0]):+.0f}, {np.median(s[:, 1]):+.0f}) px, '
+        print(f'cam{cam} batch{batch:02d}: {len(rows)} frames; shift median ({np.median(s[:, 0]):+.0f}, {np.median(s[:, 1]):+.0f}) px, '
               f'|shift| p10/50/90 {np.percentile(mag, 10):.0f}/{np.median(mag):.0f}/{np.percentile(mag, 90):.0f}; '
               f'spread around its median (p90 of distance) {np.percentile(np.linalg.norm(s - np.median(s, 0), axis=1), 90):.0f} px; '
               f'frame-to-frame step median {np.median(step):.1f}, p90 {np.percentile(step, 90):.1f} px; '
@@ -79,7 +82,7 @@ def main():
             with np.errstate(all='ignore'):
                 M = np.nanmedian(np.where(ok, np.linalg.norm((u + c)[:, None] - kp[None, :, :, :2], axis=-1), np.nan), -1)
             cst.append((np.where(ok.sum(-1) >= 6, M, np.inf).min(1) < 40).mean())
-        print(f'cam{cam}:   with one constant shift {np.mean(cst):.2f}; shift every 30 frames: ' +
+        print(f'cam{cam} batch{batch:02d}:   with one constant shift {np.mean(cst):.2f}; shift every 30 frames: ' +
               ' '.join(f'({x:+.0f},{y:+.0f})' for x, y in s[::30]), flush=True)
         res[f'cam{cam}'] = rows
     np.savez(out, **res)

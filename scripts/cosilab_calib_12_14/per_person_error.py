@@ -69,19 +69,23 @@ def main():
                 M = np.nanmedian(np.where(ok, e, np.nan), -1)
             M = np.where(ok.sum(-1) >= 6, M, 1e4)
             for r, c in zip(*linear_sum_assignment(M)):
-                per[int(pid[s[r]])].append(M[r, c])
+                d = np.where(ok[r, c][:, None], kp[c, :, :2] - uv[s][r], np.nan)  # detected - projected, per joint
+                with np.errstate(all='ignore'):
+                    per[int(pid[s[r]])].append((M[r, c], *np.nanmedian(d, 0)))
         print(f'\ncam{cam} (centre x {C[0]:+.1f}, y {C[1]:+.1f}): person, position (world x, y), distance, top cameras, '
-              f'share within 40 px, median px', flush=True)
+              f'share within 40 px, median px, median offset detected - projected', flush=True)
         out = []
         for p, e in per.items():
             e = np.array(e)
+            off = np.nanmedian(e[:, 1:], 0)
+            e = e[:, 0]
             pos = J[pid == p][:, 2].mean(0)  # neck
-            out.append((pos[1], p, pos, np.linalg.norm(pos[:2] - C[:2]), (e < 40).mean(), np.median(e), len(e)))
-        for y, p, pos, dd, u40, med, n in sorted(out):
+            out.append((pos[1], p, pos, np.linalg.norm(pos[:2] - C[:2]), (e < 40).mean(), np.median(e), len(e), off))
+        for y, p, pos, dd, u40, med, n, off in sorted(out):
             if cam in args.controls and u40 >= 0.6 and n >= 20:
                 valid.add(p)
             print(f'  {p:3d}: ({pos[0]:+.1f}, {pos[1]:+.1f}) {dd:4.1f} m  cams {sorted(seen_by[p])}  '
-                  f'{u40:.2f}  {med:6.0f} px  (n {n})', flush=True)
+                  f'{u40:.2f}  {med:6.0f} px  (n {n})  offset ({off[0]:+5.0f}, {off[1]:+5.0f}) px', flush=True)
 
     if args.valid_json:
         d = json.load(open(args.valid_json)) if os.path.exists(args.valid_json) else {}
