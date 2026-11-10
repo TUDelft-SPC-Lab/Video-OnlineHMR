@@ -85,8 +85,9 @@ def load_views(args):
 def smpl_targets(view, device):
     """
     --targets smpl: replace the 2D positions of the view's keypoints by its own per-view HMR SMPL joints (camera frame)
-    projected with the real fisheye model; the confidences stay those of the detected keypoints. The detected
-    keypoints are kept in 'kp2d_input' for the saved results (overlays and comparisons use the real detections).
+    projected with the real fisheye model; the confidences stay those of the detected keypoints. The saved results
+    hold these targets as kp2d, so the overlay draws them; compare_cosilab_multiview.py reads the detected keypoints
+    from the per-view HMR results.
     """
     smpl = SMPL().to(device)
     K = torch.tensor(view['K'], dtype=torch.float32, device=device)
@@ -312,7 +313,7 @@ def main(args):
             if pid not in view['hmr']:
                 continue
             d = view['hmr'][pid]
-            track = {'frames': d['frame_ids'], 'boxes': d['boxes'], 'kp2d': d.get('kp2d_input', d['kp2d'])}
+            track = {'frames': d['frame_ids'], 'boxes': d['boxes'], 'kp2d': d['kp2d']}  # the fit's 2D targets
             save_track(os.path.join(args.out_dir, view['name'], 'refined', f'track_{pid}.npz'),
                        camera_result(smpl, body, view, pid), d, track, view['batch'])
         print(f'person {pid} ({len(body["frames"])} frames, start from {start["best_cam"]}) '
