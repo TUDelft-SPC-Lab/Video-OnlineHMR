@@ -54,6 +54,9 @@ def parse_args(argv=None):
                         help='keypoint weight per cam-batch, e.g. cam02_batch01=0.5 (default 1 for every view)')
     parser.add_argument('--min_view_kp', type=int, default=3,
                         help='confident keypoints a camera needs in a frame to count as seeing the person')
+    parser.add_argument('--targets', type=str, default='keypoints', choices=['keypoints', 'smpl'],
+                        help='2D targets: the detected keypoints (dataset / VIT003), or each view\'s own HMR SMPL joints '
+                             'projected into that view, with the detected keypoint\'s confidence (same visibility mask)')
     parser.add_argument('--exclude', type=str, nargs='*', default=[],
                         help='person/camera pairs left out, e.g. cam12_batch01:14 (from a manual check of the overlays, '
                              'e.g. a person occluded by someone the visibility term does not model)')
@@ -71,10 +74,42 @@ def load_views(args):
                 raise ValueError(f'--exclude {cam_batch}:{pid}: no such person in that view')
             tracks.pop(pid, None)
             print(f'{cam_batch}: person {pid} left out (--exclude)')
+        if args.targets == 'smpl':
+            smpl_targets(view, args.device)
         for key, to_tensor in [('K', view['K']), ('D', view['D']), ('R', view['R']), ('t', view['t'])]:
             view['torch_' + key] = torch.tensor(to_tensor, dtype=torch.float32, device=args.device)
         views.append(view)
     return views
+
+
+def smpl_targets(view, device):
+    """
+    --targets smpl: replace the 2D positions of the view's keypoints by its own per-view HMR SMPL joints (camera frame)
+    projected with the real fisheye model; the confidences stay those of the detected keypoints. The detected
+    keypoints are kept in 'kp2d_input' for the saved results (overlays and comparisons use the real detections).
+    """
+    smpl = SMPL().to(device)
+    K = torch.tensor(view['K'], dtype=torch.float32, device=device)
+    D = torch.tensor(view['D'], dtype=torch.float32, device=device)
+    for pid, d in view['hmr'].items():
+        rotmat = torch.tensor(d['pred_rotmat'], dtype=torch.float32, device=device)
+        with torch.no_grad():
+            out = smpl(global_orient=rotmat[:, :1], body_pose=rotmat[:, 1:],
+                       betas=torch.tensor(d['pred_shape'], dtype=torch.float32, device=device),
+                       transl=torch.tensor(d['pred_trans'][:, 0], dtype=torch.float32, device=device), pose2rot=False)
+            uv = fisheye.project_torch(out.joints[:, cosilab.CONFLAB_TO_SPIN], K, D).cpu().numpy()
+        kp = d['kp2d'].copy()
+        d['kp2d_input'] = d['kp2d']
+        kp[..., :2] = uv
+        d['kp2d'] = kp
+        if pid in view['tracks']:
+            T = kp.shape[0]
+            rays = fisheye.unproject(kp[..., :2].reshape(-1, 2), view['K'], view['D']).reshape(T, 17, 3)
+            view['tracks'][pid].update(kp=kp, rays=rays @ view['R'])
+    shift = np.concatenate([np.linalg.norm(d['kp2d'][..., :2] - d['kp2d_input'][..., :2], axis=-1)[d['kp2d'][..., 2] > 0.3]
+                            for d in view['hmr'].values()])
+    print(f'{view["name"]}: SMPL targets, median {np.median(shift):.1f} px from the detected keypoints '
+          f'(p90 {np.percentile(shift, 90):.1f})', flush=True)
 
 
 def triangulated_offset(views, pid, frames, joints, kp_conf, min_joints=3):
@@ -277,7 +312,7 @@ def main(args):
             if pid not in view['hmr']:
                 continue
             d = view['hmr'][pid]
-            track = {'frames': d['frame_ids'], 'boxes': d['boxes'], 'kp2d': d['kp2d']}
+            track = {'frames': d['frame_ids'], 'boxes': d['boxes'], 'kp2d': d.get('kp2d_input', d['kp2d'])}
             save_track(os.path.join(args.out_dir, view['name'], 'refined', f'track_{pid}.npz'),
                        camera_result(smpl, body, view, pid), d, track, view['batch'])
         print(f'person {pid} ({len(body["frames"])} frames, start from {start["best_cam"]}) '
