@@ -54,6 +54,9 @@ def parse_args(argv=None):
                         help='keypoint weight per cam-batch, e.g. cam02_batch01=0.5 (default 1 for every view)')
     parser.add_argument('--min_view_kp', type=int, default=3,
                         help='confident keypoints a camera needs in a frame to count as seeing the person')
+    parser.add_argument('--exclude', type=str, nargs='*', default=[],
+                        help='person/camera pairs left out, e.g. cam12_batch01:14 (from a manual check of the overlays, '
+                             'e.g. a person occluded by someone the visibility term does not model)')
     return parser.parse_args(argv)
 
 
@@ -63,6 +66,11 @@ def load_views(args):
         view = load_view(args.hmr_root, cam_batch)
         camera, tracks = cosilab.load_results(os.path.join(args.hmr_root, cam_batch), 'hmr')
         view.update(camera=camera, hmr=tracks, batch=camera['batch'], weight=args.view_weights.get(cam_batch, 1.0))
+        for pid in args.excluded.get(cam_batch, []):
+            if view['tracks'].pop(pid, None) is None:
+                raise ValueError(f'--exclude {cam_batch}:{pid}: no such person in that view')
+            tracks.pop(pid, None)
+            print(f'{cam_batch}: person {pid} left out (--exclude)')
         for key, to_tensor in [('K', view['K']), ('D', view['D']), ('R', view['R']), ('t', view['t'])]:
             view['torch_' + key] = torch.tensor(to_tensor, dtype=torch.float32, device=args.device)
         views.append(view)
@@ -235,6 +243,12 @@ def main(args):
     unknown = set(args.view_weights) - set(args.cam_batches)
     if unknown:
         raise ValueError(f'--view_weight for cam-batches not in --cam_batches: {sorted(unknown)}')
+    args.excluded = {}
+    for e in args.exclude:
+        cb, pid = e.split(':')
+        if cb not in args.cam_batches:
+            raise ValueError(f'--exclude for a cam-batch not in --cam_batches: {e}')
+        args.excluded.setdefault(cb, []).append(int(pid))
     views = load_views(args)
     print('keypoint weight per view: ' + ', '.join(f'{v["name"]} {v["weight"]:g}' for v in views))
     smpl = SMPL().to(args.device)
