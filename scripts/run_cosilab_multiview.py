@@ -28,7 +28,9 @@ from scipy.ndimage import median_filter
 from lib.models.smpl import SMPL
 from lib.utils import cosilab, fisheye
 from lib.utils.rotation_conversions import matrix_to_rotation_6d, rotation_6d_to_matrix
+from lib.utils.temporal_smooth import SmoothConfig, gaussian_lowpass_torch, smooth_body
 from cosilab_multiview_calib import load_view, triangulate
+from compare_cosilab_multiview import FOOT_JOINTS, floor_spread
 from run_cosilab_smpl import contiguous_chunks, gmof_keypoint_loss, save_track, smoothness_loss
 
 EXP_DIR = '/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR'
@@ -54,6 +56,22 @@ def parse_args(argv=None):
                         help='keypoint weight per cam-batch, e.g. cam02_batch01=0.5 (default 1 for every view)')
     parser.add_argument('--min_view_kp', type=int, default=3,
                         help='confident keypoints a camera needs in a frame to count as seeing the person')
+    # temporal smoothing as in sam-body4d Stage 3 (lib/utils/temporal_smooth.py)
+    parser.add_argument('--smooth', type=str, default='none', choices=['none', 'pre', 'post'],
+                        help='Hampel + zero-phase Gaussian of the body: pre = of the start body, before the refinement '
+                             '(sam-body4d order); post = of the refined body')
+    parser.add_argument('--w_highpass', type=float, default=0.0,
+                        help='in the refinement loss: |x - G*x|^2 of the 6D rotations and the translation (m), i.e. '
+                             'what the Gaussian smoothing would remove')
+    parser.add_argument('--sigma_pose', type=float, default=2.0, help='frames, body joint rotations')
+    parser.add_argument('--sigma_rot', type=float, default=3.0, help='frames, root rotation')
+    parser.add_argument('--sigma_trans', type=float, default=4.0, help='frames, translation')
+    parser.add_argument('--hampel_half_window', type=int, default=3)
+    parser.add_argument('--hampel_n_sigma', type=float, default=3.0)
+    parser.add_argument('--w_floor', type=float, default=0.0,
+                        help='in the refinement loss: Huber of the lowest foot joint\'s distance to a floor plane fitted '
+                             'to all people\'s start bodies (sam-body4d ground step)')
+    parser.add_argument('--floor_huber', type=float, default=0.10, help='m, Huber threshold of the floor term')
     parser.add_argument('--exclude', type=str, nargs='*', default=[],
                         help='person/camera pairs left out, e.g. cam12_batch01:14 (from a manual check of the overlays, '
                              'e.g. a person occluded by someone the visibility term does not model)')
@@ -134,8 +152,42 @@ def init_person(smpl, views, pid, args):
         trans = trans + torch.tensor(shift[0], dtype=torch.float32, device=device)
         print(f'person {pid}: start shifted by a mean {np.linalg.norm(shift[0], axis=1).mean():.2f} m '
               f'({shift[1]} triangulated frames)', flush=True)
+    if args.smooth == 'pre':
+        rotmat, trans = smooth_body(rotmat, trans, frames, args.smooth_cfg)
     return {'frames': frames, 'best_cam': seen[-1]['name'],
             'rotmat': rotmat, 'betas': betas, 'trans': trans}
+
+
+def foot_low(joints, down):
+    """Per frame, the foot joint furthest along `down` (T, 3); joints are SMPL joints (T, 49, 3)."""
+    f = joints[:, FOOT_JOINTS]
+    return torch.gather(f, 1, (f @ down).argmax(1)[:, None, None].expand(-1, 1, 3))[:, 0]
+
+
+def fit_floor(smpl, starts):
+    """
+    Floor plane (point c, unit normal pointing down) from the lowest foot joint of every start body and frame, as in
+    compare_cosilab_multiview.py (robust plane fit with outlier removal). Returns (c, n) tensors.
+    """
+    lows, rough = [], []
+    with torch.no_grad():
+        for st in starts.values():
+            J = smpl(global_orient=st['rotmat'][:, :1], body_pose=st['rotmat'][:, 1:],
+                     betas=st['betas'].expand(len(st['frames']), -1), transl=st['trans'], pose2rot=False).joints
+            rough.append(J[:, FOOT_JOINTS].reshape(-1, 3))
+            lows.append(J)
+    rough = torch.cat(rough).cpu().numpy().astype(np.float64)
+    down = floor_spread(rough)[1]
+    down = down if down[2] > 0 else -down  # the top-view cameras look along +z
+    pts = torch.cat([foot_low(J, torch.tensor(down, dtype=J.dtype, device=J.device)) for J in lows])
+    pts = pts.cpu().numpy().astype(np.float64)
+    spread, normal, kept = floor_spread(pts)
+    normal = normal if normal @ down > 0 else -normal
+    keep = np.abs((pts - pts.mean(0)) @ normal) < 3 * spread
+    c = pts[keep].mean(0)
+    print(f'floor from the start bodies: spread {spread:.3f} m, kept {kept:.2f}, normal (down) {normal.round(3)}, '
+          f'point {c.round(3)}', flush=True)
+    return torch.tensor(c, dtype=torch.float32), torch.tensor(normal, dtype=torch.float32)
 
 
 def view_targets(view, pid, frames, device):
@@ -187,6 +239,9 @@ def refine_person(args, smpl, views, pid, start):
         transl = init_trans.clone().requires_grad_(True)
         w_single = single[s:e].float()
 
+        def highpass(x, sigma):  # what a Gaussian of sigma frames would remove, per frame
+            return (x - gaussian_lowpass_torch(x, sigma)).pow(2).flatten(1).sum(-1).mean()
+
         def depth(x):  # depth of a translation in the best camera of each frame
             return (R_best[s:e, 2] * x).sum(-1) + t_best[s:e, 2]
         init_depth = depth(init_trans)
@@ -211,6 +266,14 @@ def refine_person(args, smpl, views, pid, start):
                 l_depth = (w_single * (depth(transl) - init_depth).pow(2)).sum() / w_single.sum().clamp(min=1)
                 loss = (l_kp + args.w_pose * l_pose + args.w_beta * l_beta + args.w_depth * l_depth
                         + args.w_smooth * smoothness_loss(out.joints[:, :25]))
+                if args.w_highpass > 0:
+                    loss = loss + args.w_highpass * (highpass(pose6d[:, :1], args.sigma_rot)
+                                                     + highpass(pose6d[:, 1:], args.sigma_pose)
+                                                     + highpass(transl, args.sigma_trans))
+                if args.w_floor > 0:
+                    dist = ((foot_low(out.joints, args.floor[1]) - args.floor[0]) * args.floor[1]).sum(-1)
+                    loss = loss + args.w_floor * torch.nn.functional.huber_loss(
+                        dist, torch.zeros_like(dist), delta=args.floor_huber)
                 optim.zero_grad()
                 loss.backward()
                 optim.step()
@@ -219,6 +282,8 @@ def refine_person(args, smpl, views, pid, start):
         shape[s:e] = betas.expand(T, -1)
         trans[s:e] = transl
 
+    if args.smooth == 'post':
+        rotmat, trans = smooth_body(rotmat, trans, frames, args.smooth_cfg)
     return {'frames': frames, 'rotmat': rotmat, 'shape': shape, 'trans': trans}
 
 
@@ -249,6 +314,8 @@ def main(args):
         if cb not in args.cam_batches:
             raise ValueError(f'--exclude for a cam-batch not in --cam_batches: {e}')
         args.excluded.setdefault(cb, []).append(int(pid))
+    args.smooth_cfg = SmoothConfig(args.sigma_pose, args.sigma_rot, args.sigma_trans, args.hampel_half_window,
+                                   args.hampel_n_sigma)
     views = load_views(args)
     print('keypoint weight per view: ' + ', '.join(f'{v["name"]} {v["weight"]:g}' for v in views))
     smpl = SMPL().to(args.device)
@@ -267,11 +334,13 @@ def main(args):
         with open(os.path.join(out_dir, 'run_args.json'), 'w') as f:
             json.dump(vars(args), f, indent=2, default=str)
 
-    starts = {}
+    starts = {pid: init_person(smpl, views, pid, args) for pid in ids}
+    if args.w_floor > 0:
+        c, n = fit_floor(smpl, starts)
+        args.floor = (c.to(args.device), n.to(args.device))
     for pid in ids:
         t0 = time.time()
-        start = init_person(smpl, views, pid, args)
-        starts[pid] = start['best_cam']
+        start = starts[pid]
         body = refine_person(args, smpl, views, pid, start)
         for view in views:
             if pid not in view['hmr']:
@@ -285,7 +354,8 @@ def main(args):
 
     for view in views:
         with open(os.path.join(args.out_dir, view['name'], 'matches.json'), 'w') as f:
-            json.dump({'people': ids, 'start_camera': starts, 'cam_batches': args.cam_batches}, f, indent=2)
+            json.dump({'people': ids, 'start_camera': {p: s['best_cam'] for p, s in starts.items()},
+                       'cam_batches': args.cam_batches}, f, indent=2)
     print(f'Saved to {args.out_dir}')
 
 
