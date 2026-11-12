@@ -5,7 +5,11 @@ assumes track IDs are shared person IDs between the cameras (see scripts/cosilab
 
 Each person starts from the HMR pose of their most confident camera, shifted to the triangulated joints. The output has the layout of run_cosilab_smpl.py, per cam-batch, so the overlay works on it.
 Frames where fewer than two cameras have usable keypoints of a person keep that person's depth in the best
-camera close to the start, like the single-view refinement. People seen by one camera only are not refined
+camera close to the start, like the single-view refinement.
+By default the start body is smoothed in time (Hampel + zero-phase Gaussian, lib/utils/temporal_smooth.py, as in
+sam-body4d Stage 3) and the loss has a high-pass term on the rotations and translation (--smooth pre --w_highpass 1;
+chosen on batch01, 8 cameras: better reprojection in every camera and ~2.5x less 3D acceleration). The fit without
+them: --smooth none --w_highpass 0. People seen by one camera only are not refined
 here; their single-view result stays in --hmr_root.
 
 python scripts/run_cosilab_multiview.py --cam_batches cam01_batch01 cam03_batch01
@@ -57,10 +61,10 @@ def parse_args(argv=None):
     parser.add_argument('--min_view_kp', type=int, default=3,
                         help='confident keypoints a camera needs in a frame to count as seeing the person')
     # temporal smoothing as in sam-body4d Stage 3 (lib/utils/temporal_smooth.py)
-    parser.add_argument('--smooth', type=str, default='none', choices=['none', 'pre', 'post'],
+    parser.add_argument('--smooth', type=str, default='pre', choices=['none', 'pre', 'post'],
                         help='Hampel + zero-phase Gaussian of the body: pre = of the start body, before the refinement '
                              '(sam-body4d order); post = of the refined body')
-    parser.add_argument('--w_highpass', type=float, default=0.0,
+    parser.add_argument('--w_highpass', type=float, default=1.0,
                         help='in the refinement loss: |x - G*x|^2 of the 6D rotations and the translation (m), i.e. '
                              'what the Gaussian smoothing would remove')
     parser.add_argument('--sigma_pose', type=float, default=2.0, help='frames, body joint rotations')
