@@ -254,7 +254,9 @@ def refine_person(args, smpl, views, pid, start):
         chunks += [(cs, ce, max(s, cs - margin), min(e, ce + margin)) for cs, ce in zip(bounds[:-1], bounds[1:])]
 
     pose6d = matrix_to_rotation_6d(start['rotmat']).clone().requires_grad_(True)
-    betas = start['betas'].clone().requires_grad_(True)  # one shape per person
+    # one shape per person; the mean over the frames (= the start value up to rounding) is what the earlier per-window
+    # fit started from, so short clips (one chunk) reproduce it exactly
+    betas = start['betas'].expand(T_all, -1).mean(0, keepdim=True).clone().requires_grad_(True)
     transl = start['trans'].clone().requires_grad_(True)
     optim = torch.optim.Adam([pose6d, betas, transl], lr=args.refine_lr)
     kp_to_spin = torch.tensor(cosilab.CONFLAB_TO_SPIN, device=dev)
