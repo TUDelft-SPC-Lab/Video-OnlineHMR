@@ -2,18 +2,30 @@
 Show the SMPL results of scripts/run_cosilab_smpl.py for one cam-batch in 3D with viser:
 all tracks over time, the static camera(s) and a floor grid.
 
+--result_dir can also be a top folder (e.g. cosilab_multiview_8cam_smooth_prehp1) holding several
+camXX_batchYY folders of one batch. Each person is then shown once, in the world frame: frames come from
+the camera that has the most frames of that person, and the other cameras fill in the frames it misses.
+For multi-view `refined` results the per-camera copies are the same body; for single-view results (or
+`hmr`) they are separate fits, so the printed overlap disagreement is large and the body can jump where
+another camera fills in.
+
 The world frame is the frame of camera 06 (session 1) or camera 01 (session 2). The up direction
 and the floor height are estimated from the people. SMPL meshes are computed per timestep.
 
 python scripts/visualize_cosilab_viser.py \
     --result_dir /tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR/cosilab_smpl/cam01_batch01 \
     --which hmr --all_cameras
+
+python scripts/visualize_cosilab_viser.py \
+    --result_dir /tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR/cosilab_multiview_8cam_smooth_prehp1 \
+    --which refined --all_cameras
 """
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
+import re
 import time
 
 import numpy as np
@@ -38,9 +50,73 @@ def rotation_between(a, b):
     return np.eye(3) + vx + vx @ vx / (1 + c)
 
 
+def merge_cam_batches(root, which, batch=None):
+    """
+    Load all camXX_batchYY folders under root (one session and batch) and merge each person into one
+    world-frame track. Returns (list of camera dicts, {pid: track dict}).
+    """
+    found = {}
+    for name in sorted(os.listdir(root)):
+        m = re.fullmatch(r'cam(\d+)_batch(\d+)', name)
+        if m and os.path.isfile(os.path.join(root, name, 'camera.json')) \
+                and os.path.isdir(os.path.join(root, name, which)):
+            found.setdefault(int(m.group(2)), []).append(name)
+    if not found:
+        raise SystemExit(f'No camXX_batchYY folders with camera.json and {which}/ in {root}')
+    if batch is None:
+        if len(found) > 1:
+            raise SystemExit(f'{root} has batches {sorted(found)}; pick one with --batch')
+        batch = next(iter(found))
+    if batch not in found:
+        raise SystemExit(f'No batch {batch} in {root} (batches: {sorted(found)})')
+
+    cameras, per_cam = [], {}
+    for name in found[batch]:
+        camera, tracks = cosilab.load_results(os.path.join(root, name), which)
+        if camera['R_w2c'] is None:
+            print(f'{name}: no extrinsics, skipped')
+            continue
+        cameras.append(camera)
+        for pid, t in tracks.items():
+            per_cam.setdefault(pid, []).append((name, t))
+    sessions = {c['session'] for c in cameras}
+    if len(sessions) > 1:
+        raise SystemExit(f'{root} batch {batch} mixes sessions {sorted(sessions)}')
+    print(f'{root}: batch {batch}, {which}, cameras {[c["cam"] for c in cameras]}')
+
+    keys = ['frame_ids', 'pred_rotmat', 'pred_shape', 'world_rotmat_root', 'world_trans']
+    merged, gaps = {}, []
+    for pid, items in per_cam.items():
+        items = sorted(items, key=lambda it: -len(it[1]['frame_ids']))  # most frames first
+        rows = {}  # batch frame -> (camera name, row)
+        for name, t in items:
+            for i, k in enumerate(t['frame_ids']):
+                rows.setdefault(int(k), (name, i))
+        tracks = dict(items)
+        frames = sorted(rows)
+        merged[pid] = {key: np.stack([tracks[rows[k][0]][key][rows[k][1]] for k in frames]) for key in keys}
+        # Disagreement of the world translation where several cameras have this person
+        ref = items[0][1]
+        ref_row = {int(k): i for i, k in enumerate(ref['frame_ids'])}
+        for name, t in items[1:]:
+            common = [(ref_row[int(k)], i) for i, k in enumerate(t['frame_ids']) if int(k) in ref_row]
+            if common:
+                a, b = np.array(common).T
+                gaps.append(np.linalg.norm(ref['world_trans'][a] - t['world_trans'][b], axis=-1))
+        print(f'  person {pid}: {len(frames)} frames from ' +
+              ', '.join(f'{name} ({len(t["frame_ids"])})' for name, t in items))
+    if gaps:
+        gaps = np.concatenate(gaps)
+        print(f'world translation of the same person in two cameras on shared frames: median '
+              f'{np.median(gaps) * 1000:.2f} mm, max {gaps.max() * 1000:.2f} mm ({len(gaps)} pairs)')
+        if np.median(gaps) > 0.01:
+            print('  -> the per-camera bodies are separate fits, not one shared body')
+    return cameras, merged
+
+
 def main():
     parser = argparse.ArgumentParser(description='3D view of COSI-Lab SMPL results')
-    parser.add_argument('--result_dir', type=str, required=True, help='<out_dir>/camXX_batchYY')
+    parser.add_argument('--result_dir', type=str, required=True, help='<out_dir>/camXX_batchYY, or <out_dir> to merge all its cameras')
     parser.add_argument('--which', type=str, default='hmr', choices=['hmr', 'refined'])
     parser.add_argument('--frame', type=str, default='world', choices=['world', 'camera'])
     parser.add_argument('--start', type=int, default=None, help='first batch frame (default: first result)')
@@ -49,9 +125,18 @@ def main():
     parser.add_argument('--all_cameras', action='store_true', help='also show the other session cameras')
     parser.add_argument('--fps', type=int, default=60, help='initial playback speed (1-60)')
     parser.add_argument('--port', type=int, default=8080)
+    parser.add_argument('--batch', type=int, default=None,
+                        help='with a top folder holding several batches: the batch to show')
     args = parser.parse_args()
 
-    camera, tracks = cosilab.load_results(args.result_dir, args.which)
+    if os.path.isfile(os.path.join(args.result_dir, 'camera.json')):
+        camera, tracks = cosilab.load_results(args.result_dir, args.which)
+        own_cams = [camera]
+    else:
+        if args.frame != 'world':
+            raise SystemExit('A top folder merges cameras, so it needs --frame world')
+        own_cams, tracks = merge_cam_batches(args.result_dir, args.which, args.batch)
+        camera = own_cams[0]
     if args.frame == 'world' and camera['R_w2c'] is None:
         print(f'Camera {camera["cam"]:02d} has no extrinsics, showing the camera frame')
         args.frame = 'camera'
@@ -107,17 +192,17 @@ def main():
     if world:
         cams = cosilab.session_cameras(camera['data_root'], camera['session'], camera['extrinsic_c2w']) \
             if args.all_cameras else []
-        cams = [c for c in cams if c['cam'] != camera['cam']]
-        own = {'cam': camera['cam'], 'K': np.array(camera['K']),
-               'R_w2c': np.array(camera['R_w2c']), 't_w2c': np.array(camera['t_w2c'])}
-        cams = [own] + cams
+        own_ids = {c['cam'] for c in own_cams}
+        cams = [{'cam': c['cam'], 'K': np.array(c['K']), 'R_w2c': np.array(c['R_w2c']),
+                 't_w2c': np.array(c['t_w2c'])} for c in own_cams] + [c for c in cams if c['cam'] not in own_ids]
     else:
+        own_ids = {camera['cam']}
         cams = [{'cam': camera['cam'], 'K': np.array(camera['K']), 'R_w2c': np.eye(3), 't_w2c': np.zeros(3)}]
     for c in cams:
         R_c2w = c['R_w2c'].T
         pos = -R_c2w @ c['t_w2c']
         fov = 2 * np.arctan(540 / c['K'][1, 1])
-        color = (255, 80, 40) if c['cam'] == camera['cam'] else (60, 60, 60)
+        color = (255, 80, 40) if c['cam'] in own_ids else (60, 60, 60)
         server.scene.add_camera_frustum(f'/cameras/cam{c["cam"]:02d}', fov=fov, aspect=16 / 9, scale=0.3,
                                         wxyz=vtf.SO3.from_matrix(R_c2w).wxyz, position=pos, color=color)
         server.scene.add_label(f'/cameras/cam{c["cam"]:02d}/label', f'cam{c["cam"]:02d}')
