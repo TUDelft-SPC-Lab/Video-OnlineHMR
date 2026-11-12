@@ -48,7 +48,7 @@ def main():
     parser.add_argument('--resize', type=float, default=0.5, help='output scale')
     parser.add_argument('--video', type=str, default=None, help='default: the video in camera.json')
     parser.add_argument('--out', type=str, default=None,
-                        help='default: <result_dir>/overlay_<which>_<start>.mp4')
+                        help='default: <result_dir>/overlay_<which>_<start>_camXX.mp4')
     args = parser.parse_args()
 
     camera, tracks = cosilab.load_results(args.result_dir, args.which)
@@ -57,7 +57,7 @@ def main():
     D = torch.tensor(camera['D'], dtype=torch.float32)
     start = min(index) if args.start is None else args.start
     video = args.video or camera['video']
-    out_path = args.out or os.path.join(args.result_dir, f'overlay_{args.which}_{start}.mp4')
+    out_path = args.out or os.path.join(args.result_dir, f'overlay_{args.which}_{start}_cam{camera["cam"]:02d}.mp4')
 
     smpl = SMPL()
     faces = np.asarray(smpl.faces, dtype=np.int64)
