@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:nvidia_a40:1
-#SBATCH --time=00:10:00
+#SBATCH --time=00:20:00
 #SBATCH --output=logs/cosilab_multiview_%j.out
 # Multi-view SMPL refinement of the cam-batches of one session. Needs their results of
 # scripts/cosilab_smpl.sbatch. --time fits 600-frame clips only. Arguments go to scripts/run_cosilab_multiview.py:

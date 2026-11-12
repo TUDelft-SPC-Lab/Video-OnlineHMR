@@ -9,8 +9,8 @@ For multi-view `refined` results the per-camera copies are the same body; for si
 `hmr`) they are separate fits, so the printed overlap disagreement is large and the body can jump where
 another camera fills in.
 
-The world frame is the frame of camera 06 (session 1) or camera 01 (session 2). The up direction
-and the floor height are estimated from the people. SMPL meshes are computed per timestep.
+The world frame is the frame of camera 06 (session 1) or camera 01 (session 2). The floor grid is a robust
+plane fitted to the people's lowest points, and the up direction is its normal. SMPL meshes are computed per timestep.
 
 python scripts/visualize_cosilab_viser.py \
     --result_dir /tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR/cosilab_smpl/cam01_batch01 \
@@ -35,6 +35,8 @@ import viser.transforms as vtf
 
 from lib.models.smpl import SMPL
 from lib.utils import cosilab
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from compare_cosilab_multiview import floor_spread
 
 # Start view for session 2 in the world frame, copied from the viser client's URL parameters
 INITIAL_CAMERA = {'position': (0.311, 2.754, 1.765), 'look_at': (0.202, 1.331, 2.124),
@@ -166,18 +168,34 @@ def main():
                        pose2rot=False, default_smpl=True)
         return out.vertices.numpy()
 
-    # Up direction: the SMPL +y axis of the people (they mostly stand). Floor: their lowest points.
+    # Floor: a robust plane through the lowest body point of sampled person-frames (as floor_spread in
+    # compare_cosilab_multiview.py). The mean SMPL +y axis of the people only picks "lowest" and the normal's sign,
+    # and is the fallback normal when the lowest points don't span an area (e.g. one person standing still).
     roots = np.concatenate([t['root'] for t in tracks.values()])
-    up = roots[:, :, 1].mean(0)
-    up /= np.linalg.norm(up)
+    body_up = roots[:, :, 1].mean(0)
+    body_up /= np.linalg.norm(body_up)
     rng = np.random.default_rng(0)
     sample = [(p, i) for p, t in tracks.items() for i in range(len(t['frame_ids']))]
-    sample = [sample[j] for j in rng.choice(len(sample), min(300, len(sample)), replace=False)]
-    verts = bodies(sample)
-    floor_h = np.median((verts @ up).min(1))
+    sample = [sample[j] for j in rng.choice(len(sample), min(1000, len(sample)), replace=False)]
+    low = []
+    for k in range(0, len(sample), 250):
+        verts = bodies(sample[k:k + 250])
+        low.append(verts[np.arange(len(verts)), (verts @ body_up).argmin(1)])
+    low = np.concatenate(low).astype(np.float64)
+    in_plane = np.linalg.svd(low - low.mean(0), compute_uv=False)[1] / np.sqrt(len(low))
+    if in_plane > 0.3:
+        spread, up, kept = floor_spread(low)
+        up = up if up @ body_up > 0 else -up
+        keep = np.abs((low - low.mean(0)) @ up) < 3 * spread
+        angle = np.degrees(np.arccos(np.clip(up @ body_up, -1, 1)))
+        print(f'floor: plane fitted to the lowest point of {len(low)} person-frames, spread {spread:.3f} m '
+              f'(kept {kept:.2f}), up {np.round(up, 3)}, {angle:.1f} deg from the mean body up')
+    else:
+        up, keep = body_up, np.ones(len(low), dtype=bool)
+        print(f'floor: lowest points span only {in_plane:.2f} m, using the mean body up {np.round(up, 3)} as the normal')
+    floor_point = np.median(low[keep], 0)
     centre = np.concatenate([t['trans'] for t in tracks.values()]).mean(0)
-    floor_centre = centre - (centre @ up - floor_h) * up
-    print(f'up {np.round(up, 3)}, floor at {floor_h:.2f} m along up')
+    floor_centre = centre - ((centre - floor_point) @ up) * up
 
     server = viser.ViserServer(port=args.port)
     server.scene.set_up_direction(tuple(up))

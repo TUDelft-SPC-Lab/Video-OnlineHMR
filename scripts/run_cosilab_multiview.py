@@ -48,7 +48,8 @@ def parse_args(argv=None):
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--kp_conf', type=float, default=0.3, help='ignore keypoints below this confidence')
     parser.add_argument('--refine_window', type=int, default=1000, help='frames optimised together')
-    parser.add_argument('--refine_iters', type=int, default=150)
+    parser.add_argument('--refine_iters', type=int, default=600,
+                        help='Adam steps per window; 150 left slow, localised fixes (e.g. one arm) unfinished')
     parser.add_argument('--refine_lr', type=float, default=0.01)
     parser.add_argument('--gmof_sigma', type=float, default=0.3, help='robust scale, in box-size units')
     parser.add_argument('--w_pose', type=float, default=0.01, help='stay close to the HMR body pose')
