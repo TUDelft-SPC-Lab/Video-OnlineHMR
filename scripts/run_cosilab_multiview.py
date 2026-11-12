@@ -35,7 +35,7 @@ from lib.utils.rotation_conversions import matrix_to_rotation_6d, rotation_6d_to
 from lib.utils.temporal_smooth import SmoothConfig, gaussian_lowpass_torch, smooth_body
 from cosilab_multiview_calib import load_view, triangulate
 from compare_cosilab_multiview import FOOT_JOINTS, floor_spread
-from run_cosilab_smpl import contiguous_chunks, gmof_keypoint_loss, save_track, smoothness_loss
+from run_cosilab_smpl import contiguous_chunks, gmof_keypoint_loss, save_track
 
 EXP_DIR = '/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR'
 
@@ -47,9 +47,10 @@ def parse_args(argv=None):
     parser.add_argument('--out_dir', type=str, default=f'{EXP_DIR}/cosilab_multiview')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--kp_conf', type=float, default=0.3, help='ignore keypoints below this confidence')
-    parser.add_argument('--refine_window', type=int, default=1000, help='frames optimised together')
+    parser.add_argument('--refine_window', type=int, default=1000,
+                        help='frames per memory chunk; all chunks of a person are optimised together')
     parser.add_argument('--refine_iters', type=int, default=600,
-                        help='Adam steps per window; 150 left slow, localised fixes (e.g. one arm) unfinished')
+                        help='Adam steps; 150 left slow, localised fixes (e.g. one arm) unfinished')
     parser.add_argument('--refine_lr', type=float, default=0.01)
     parser.add_argument('--gmof_sigma', type=float, default=0.3, help='robust scale, in box-size units')
     parser.add_argument('--w_pose', type=float, default=0.01, help='stay close to the HMR body pose')
@@ -213,80 +214,94 @@ def project_view(joints, view):
 
 
 def refine_person(args, smpl, views, pid, start):
-    """Fit one world-frame body to the keypoints of every camera, per contiguous chunk and window."""
+    """
+    Fit one world-frame body to the keypoints of every camera: one optimisation over all of the person's frames, with
+    one body shape. --refine_window only bounds memory: the frames are processed in chunks, each with a context of
+    `margin` frames on both sides (inside the same run of consecutive frames), and every Adam step sums the gradients
+    of all chunks, so the result is that of fitting all frames at once. The temporal terms (acceleration, high-pass)
+    therefore link the frames across chunk boundaries; they never cross a gap in the person's frames.
+    """
     seen = [v for v in views if pid in v['hmr']]
     frames = start['frames']
-    targets = [view_targets(v, pid, frames, args.device) for v in seen]
+    T_all = len(frames)
+    dev = args.device
+    targets = [view_targets(v, pid, frames, dev) for v in seen]
     # cameras with usable keypoints per frame; with fewer than two, depth is anchored in the best one
     counts = torch.stack([(kp[..., 2] > args.kp_conf).sum(-1) for kp, _ in targets])
     single = (counts >= args.min_view_kp).sum(0) < 2
     best = counts.argmax(0)
     R_best = torch.stack([v['torch_R'] for v in seen])[best]
     t_best = torch.stack([v['torch_t'] for v in seen])[best]
-    print(f'person {pid}: {int(single.sum())} of {len(frames)} frames with fewer than two usable cameras', flush=True)
-    rotmat = start['rotmat'].clone()
-    trans = start['trans'].clone()
-    shape = start['betas'].expand(len(frames), -1).clone()
+    print(f'person {pid}: {int(single.sum())} of {T_all} frames with fewer than two usable cameras', flush=True)
 
-    windows = []
-    for s, e in contiguous_chunks(frames, 1):
-        n_win = int(np.ceil((e - s) / args.refine_window))
-        bounds = np.linspace(s, e, n_win + 1).round().astype(int)
-        windows += list(zip(bounds[:-1], bounds[1:]))
+    init_body = start['rotmat'][:, 1:].clone()
+    init_depth = (R_best[:, 2] * start['trans']).sum(-1) + t_best[:, 2]
+    w_single = single.float()
+    confs = [kp[..., 2] * (kp[..., 2] > args.kp_conf) for kp, _ in targets]
+    # normalisers over all frames, so that the summed chunk losses equal the loss over the whole sequence
+    conf_total = sum(v['weight'] * c.sum() for v, c in zip(seen, confs)).clamp(min=1)
+    single_total = w_single.sum().clamp(min=1)
 
-    kp_to_spin = torch.tensor(cosilab.CONFLAB_TO_SPIN, device=args.device)
-    for s, e in windows:
-        T = e - s
-        init_body = rotmat[s:e, 1:].clone()
-        pose6d = matrix_to_rotation_6d(rotmat[s:e]).clone().requires_grad_(True)
-        betas = shape[s:e].mean(0, keepdim=True).clone().requires_grad_(True)
-        init_trans = trans[s:e].clone()
-        transl = init_trans.clone().requires_grad_(True)
-        w_single = single[s:e].float()
+    runs = contiguous_chunks(frames, 1)
+    n_accel = sum(max(e - s - 2, 0) for s, e in runs) * 25
+    margin = 2
+    if args.w_highpass > 0:  # the Gaussian of the high-pass term reaches int(4 sigma + 0.5) frames
+        margin = max(margin, int(4 * max(args.sigma_pose, args.sigma_rot, args.sigma_trans) + 0.5))
+    chunks = []  # (core start, core end, context start, context end)
+    for s, e in runs:
+        n = int(np.ceil((e - s) / args.refine_window))
+        bounds = np.linspace(s, e, n + 1).round().astype(int)
+        chunks += [(cs, ce, max(s, cs - margin), min(e, ce + margin)) for cs, ce in zip(bounds[:-1], bounds[1:])]
 
-        def highpass(x, sigma):  # what a Gaussian of sigma frames would remove, per frame
-            return (x - gaussian_lowpass_torch(x, sigma)).pow(2).flatten(1).sum(-1).mean()
+    pose6d = matrix_to_rotation_6d(start['rotmat']).clone().requires_grad_(True)
+    betas = start['betas'].clone().requires_grad_(True)  # one shape per person
+    transl = start['trans'].clone().requires_grad_(True)
+    optim = torch.optim.Adam([pose6d, betas, transl], lr=args.refine_lr)
+    kp_to_spin = torch.tensor(cosilab.CONFLAB_TO_SPIN, device=dev)
 
-        def depth(x):  # depth of a translation in the best camera of each frame
-            return (R_best[s:e, 2] * x).sum(-1) + t_best[s:e, 2]
-        init_depth = depth(init_trans)
-        window_targets = [(kp[s:e, :, :2], kp[s:e, :, 2] * (kp[s:e, :, 2] > args.kp_conf), size[s:e, None, None])
-                          for kp, size in targets]
-        optim = torch.optim.Adam([pose6d, betas, transl], lr=args.refine_lr)
+    def highpass(x, sigma, core):  # what a Gaussian of sigma frames would remove, summed over the core frames
+        return (x - gaussian_lowpass_torch(x, sigma))[core].pow(2).flatten(1).sum(-1).sum()
 
-        with torch.enable_grad():
-            for _ in range(args.refine_iters):
-                R = rotation_6d_to_matrix(pose6d)
-                out = smpl(global_orient=R[:, :1], body_pose=R[:, 1:], betas=betas.expand(T, -1),
-                           transl=transl, pose2rot=False)
-                joints = out.joints[:, kp_to_spin]
-                kp_sum, conf_sum = 0, 0
-                for view, (target, conf, box_size) in zip(seen, window_targets):
-                    gmof = gmof_keypoint_loss(project_view(joints, view), target, box_size, args.gmof_sigma)
-                    kp_sum = kp_sum + view['weight'] * (conf * gmof).sum()
-                    conf_sum = conf_sum + view['weight'] * conf.sum()
-                l_kp = kp_sum / conf_sum.clamp(min=1)
-                l_pose = (R[:, 1:] - init_body).pow(2).sum((-1, -2)).mean()
-                l_beta = betas.pow(2).mean()
-                l_depth = (w_single * (depth(transl) - init_depth).pow(2)).sum() / w_single.sum().clamp(min=1)
-                loss = (l_kp + args.w_pose * l_pose + args.w_beta * l_beta + args.w_depth * l_depth
-                        + args.w_smooth * smoothness_loss(out.joints[:, :25]))
+    with torch.enable_grad():
+        for _ in range(args.refine_iters):
+            optim.zero_grad()
+            for k, (cs, ce, a, b) in enumerate(chunks):
+                core = slice(cs - a, ce - a)
+                R = rotation_6d_to_matrix(pose6d[a:b])
+                out = smpl(global_orient=R[:, :1], body_pose=R[:, 1:], betas=betas.expand(b - a, -1),
+                           transl=transl[a:b], pose2rot=False)
+                joints = out.joints[core][:, kp_to_spin]
+                l_kp = 0
+                for view, (kp, size), conf in zip(seen, targets, confs):
+                    gmof = gmof_keypoint_loss(project_view(joints, view), kp[cs:ce, :, :2], size[cs:ce, None, None],
+                                              args.gmof_sigma)
+                    l_kp = l_kp + view['weight'] * (conf[cs:ce] * gmof).sum()
+                l_kp = l_kp / conf_total
+                l_pose = (R[core, 1:] - init_body[cs:ce]).pow(2).sum((-1, -2)).sum() / T_all
+                depth = (R_best[cs:ce, 2] * transl[cs:ce]).sum(-1) + t_best[cs:ce, 2]
+                l_depth = (w_single[cs:ce] * (depth - init_depth[cs:ce]).pow(2)).sum() / single_total
+                # acceleration at the core frames (their neighbours may lie in the context)
+                J = out.joints[:, :25]
+                m0, m1 = max(cs - a, 1), min(ce - a, b - a - 1)
+                l_smooth = (J[m0 + 1:m1 + 1] - 2 * J[m0:m1] + J[m0 - 1:m1 - 1]).pow(2).sum() / max(n_accel, 1) \
+                    if m1 > m0 else 0
+                loss = l_kp + args.w_pose * l_pose + args.w_depth * l_depth + args.w_smooth * l_smooth
+                if k == 0:
+                    loss = loss + args.w_beta * betas.pow(2).mean()
                 if args.w_highpass > 0:
-                    loss = loss + args.w_highpass * (highpass(pose6d[:, :1], args.sigma_rot)
-                                                     + highpass(pose6d[:, 1:], args.sigma_pose)
-                                                     + highpass(transl, args.sigma_trans))
+                    loss = loss + args.w_highpass * (highpass(pose6d[a:b, :1], args.sigma_rot, core)
+                                                     + highpass(pose6d[a:b, 1:], args.sigma_pose, core)
+                                                     + highpass(transl[a:b], args.sigma_trans, core)) / T_all
                 if args.w_floor > 0:
-                    dist = ((foot_low(out.joints, args.floor[1]) - args.floor[0]) * args.floor[1]).sum(-1)
+                    dist = ((foot_low(out.joints[core], args.floor[1]) - args.floor[0]) * args.floor[1]).sum(-1)
                     loss = loss + args.w_floor * torch.nn.functional.huber_loss(
-                        dist, torch.zeros_like(dist), delta=args.floor_huber)
-                optim.zero_grad()
+                        dist, torch.zeros_like(dist), delta=args.floor_huber, reduction='sum') / T_all
                 loss.backward()
-                optim.step()
+            optim.step()
 
-        rotmat[s:e] = rotation_6d_to_matrix(pose6d)
-        shape[s:e] = betas.expand(T, -1)
-        trans[s:e] = transl
-
+    rotmat = rotation_6d_to_matrix(pose6d.detach())
+    trans = transl.detach()
+    shape = betas.detach().expand(T_all, -1).clone()
     if args.smooth == 'post':
         rotmat, trans = smooth_body(rotmat, trans, frames, args.smooth_cfg)
     return {'frames': frames, 'rotmat': rotmat, 'shape': shape, 'trans': trans}
