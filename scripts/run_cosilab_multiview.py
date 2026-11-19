@@ -25,6 +25,7 @@ import json
 import shutil
 import time
 
+import cv2
 import numpy as np
 import torch
 from scipy.ndimage import median_filter
@@ -78,6 +79,9 @@ def parse_args(argv=None):
                         help='in the refinement loss: Huber of the lowest foot joint\'s distance to a floor plane fitted '
                              'to all people\'s start bodies (sam-body4d ground step)')
     parser.add_argument('--floor_huber', type=float, default=0.10, help='m, Huber threshold of the floor term')
+    parser.add_argument('--extrinsics', type=str, nargs='*', default=[],
+                        help='replace a camera\'s extrinsics, e.g. cam12_batch01=.../extrinsic.json (rvec, tvec world->camera, '
+                             'as the dataset); the output camera.json gets them too')
     parser.add_argument('--exclude', type=str, nargs='*', default=[],
                         help='person/camera pairs left out, e.g. cam12_batch01:14 (from a manual check of the overlays, '
                              'e.g. a person occluded by someone the visibility term does not model)')
@@ -90,6 +94,18 @@ def load_views(args):
         view = load_view(args.hmr_root, cam_batch)
         camera, tracks = cosilab.load_results(os.path.join(args.hmr_root, cam_batch), 'hmr')
         view.update(camera=camera, hmr=tracks, batch=camera['batch'], weight=args.view_weights.get(cam_batch, 1.0))
+        if cam_batch in args.extrinsics_files:
+            with open(args.extrinsics_files[cam_batch]) as f:
+                extr = json.load(f)
+            R_new = cv2.Rodrigues(np.array(extr['rvec'], dtype=np.float64).reshape(3))[0]
+            t_new = np.array(extr['tvec'], dtype=np.float64).reshape(3)
+            for t in view['tracks'].values():  # world rays: camera-frame rays (rays @ R_old^T) rotated by the new R
+                t['rays'] = (t['rays'] @ view['R'].T) @ R_new
+            dR = np.degrees(np.linalg.norm(cv2.Rodrigues(R_new @ view['R'].T)[0]))
+            print(f'{cam_batch}: extrinsics from {args.extrinsics_files[cam_batch]} (centre moved '
+                  f'{np.linalg.norm(-R_new.T @ t_new - view["C"]):.2f} m, rotated {dR:.1f} deg)')
+            view.update(R=R_new, t=t_new, C=-R_new.T @ t_new)
+            camera.update(R_w2c=R_new.tolist(), t_w2c=t_new.tolist(), extrinsics_file=args.extrinsics_files[cam_batch])
         for pid in args.excluded.get(cam_batch, []):
             if view['tracks'].pop(pid, None) is None:
                 raise ValueError(f'--exclude {cam_batch}:{pid}: no such person in that view')
@@ -330,6 +346,10 @@ def main(args):
     unknown = set(args.view_weights) - set(args.cam_batches)
     if unknown:
         raise ValueError(f'--view_weight for cam-batches not in --cam_batches: {sorted(unknown)}')
+    args.extrinsics_files = dict(e.split('=', 1) for e in args.extrinsics)
+    unknown = set(args.extrinsics_files) - set(args.cam_batches)
+    if unknown:
+        raise ValueError(f'--extrinsics for cam-batches not in --cam_batches: {sorted(unknown)}')
     args.excluded = {}
     for e in args.exclude:
         cb, pid = e.split(':')
@@ -352,7 +372,8 @@ def main(args):
         shutil.rmtree(out_dir, ignore_errors=True)  # never mix tracks of different runs
         os.makedirs(os.path.join(out_dir, 'refined'))
         shutil.copytree(os.path.join(args.hmr_root, view['name'], 'hmr'), os.path.join(out_dir, 'hmr'))
-        shutil.copy(os.path.join(args.hmr_root, view['name'], 'camera.json'), out_dir)
+        with open(os.path.join(out_dir, 'camera.json'), 'w') as f:  # with --extrinsics: the replaced ones
+            json.dump(view['camera'], f, indent=2)
         with open(os.path.join(out_dir, 'run_args.json'), 'w') as f:
             json.dump(vars(args), f, indent=2, default=str)
 
