@@ -25,6 +25,11 @@ KP_SCALE = 2.0  # the ViTPose results are in 960x540, the videos are 1920x1080
 # side cameras are taken from SIDE_SESSION (only session 2 is processed so far).
 SIDE_CAMS = (12, 13, 14, 15)
 SIDE_SESSION = 2
+# The stored extrinsics of side cameras 12 and 14 (chained through camera 04) don't fit the people (300+ px), see
+# scripts/cosilab_calib_12_14/FINDINGS.md. load_camera(..., use_refit=True) reads re-estimated extrinsics for them
+# (scripts/cosilab_refit_extrinsic.py); no usable refit exists yet, so it is off by default.
+SIDE_EXTRINSIC_REFIT = (12, 14)
+SIDE_EXTRINSIC_ROOT = '/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR/cosilab_side_calibration'
 # Their timestamp CSVs (not in the dataset), written by scripts/cosilab_side_timestamps.py
 SIDE_TIMESTAMP_ROOT = '/tudelft.net/staff-umbrella/neon/experiments/Video-OnlineHMR/cosilab_side_timestamps'
 
@@ -80,12 +85,13 @@ def calib_root(data_root, cam=None):
     return os.path.join(data_root, 'videos', 'camera_calibration', 'idiap_params')
 
 
-def load_camera(data_root, cam, extrinsic_c2w=False):
+def load_camera(data_root, cam, extrinsic_c2w=False, use_refit=False):
     """
     Load the fisheye intrinsics and the session extrinsics of a camera.
     The extrinsics are read as OpenCV world->camera (X_c = R X_w + t) unless extrinsic_c2w is set.
     The world frame is the frame of camera 06 (session 1) or camera 01 (session 2), for the side cameras too.
     Camera 05 has no extrinsics; R_w2c and t_w2c are then None.
+    With use_refit, cameras in SIDE_EXTRINSIC_REFIT read their extrinsics from SIDE_EXTRINSIC_ROOT.
     """
     root = calib_root(data_root, cam)
     with open(os.path.join(root, 'intrinsics', f'camera_{cam:02d}', 'intrinsic.json')) as f:
@@ -95,6 +101,10 @@ def load_camera(data_root, cam, extrinsic_c2w=False):
     sep = '-' if session == 1 else '_'
     view = 'side' if cam in SIDE_CAMS else 'top'
     extr_file = os.path.join(root, f'mingling_{session}_{view}', f'camera{sep}{cam:02d}', 'extrinsic.json')
+    if use_refit and cam in SIDE_EXTRINSIC_REFIT:
+        extr_file = os.path.join(SIDE_EXTRINSIC_ROOT, f'mingling_{session}_side', f'camera_{cam:02d}', 'extrinsic.json')
+        if not os.path.exists(extr_file):
+            raise FileNotFoundError(f'{extr_file}: run scripts/cosilab_refit_extrinsic.py first')
 
     camera = {
         'cam': cam,
