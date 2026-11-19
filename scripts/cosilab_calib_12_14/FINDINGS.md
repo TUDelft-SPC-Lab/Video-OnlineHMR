@@ -188,3 +188,27 @@ Pipeline re-run for batch02 and batch03 (frames 6000–6600, i.e. 5 and 10 min l
 (seen only by cams 03/04) and from occlusions that those wrong bodies hide from the visibility test, not from the
 extrinsics. The stored (board) extrinsics are within ~15–30 px. Next: use cam12/14 with the stored extrinsics like
 13/15; their views cover exactly the region where the top-camera bodies are weak.
+
+## Update (2026-11-19, fourth round: 2 minutes of footage, batch01 frames 6000–13200)
+13. **Leave-one-out refits** (bodies from 7-camera fits without the refitted camera, 150 iterations; every 10th frame):
+    - people only: cam12 0.27 → 0.44 within 40 px, moving 0.33 m / 3.7°; cam14 0.42 → 0.56, 0.46 m / 6.9°;
+      controls cam13 no move, cam15 0.03 m / 1.4°. Much smaller moves than with the 10 s batches (~0.9 m / 10–11°).
+    - people + boards (w_board 100): cam12 0.38 at 4 px on the boards; cam14 0.50 at 18 px on the boards.
+14. **Independent check through the other cameras** (8-camera fits, 150 iterations, compared with
+    `compare_cosilab_multiview.py`, reference = fit without cams 12/14; `cosilab_calib_12_14/2min/compare_check_*.log`):
+
+    | fit | cam01 | cam02 | cam03 | cam04 | cam13 | cam15 | to cam01–03 triangulation | floor |
+    |---|---|---|---|---|---|---|---|---|
+    | no 12/14 (reference) | 14.7 | 18.3 | 18.3 | 27.0 | 13.3 | 14.2 | 0.087 m | 0.108 m |
+    | stored | 14.8 | 19.2 | 20.4 | 26.3 | 15.2 | 14.0 | 0.088 m | 0.087 m |
+    | people + boards refit | 14.9 | 19.0 | 19.7 | 27.9 | 14.4 | 14.1 | 0.094 m | 0.087 m |
+    | people-only refit | 15.0 | 18.9 | 19.3 | 29.5 | 13.9 | 14.4 | 0.095 m | 0.090 m |
+
+    No refit wins: gains in cam03 / cam13 are within run-to-run noise (~1 px), cam04 gets clearly worse (+1.6 / +3.2 px)
+    and the distance to the cam01–03 triangulation grows (0.088 → 0.094–0.095 m). The refits fit cam12/14 to the errors
+    of the bodies at the cam04 end of the room. (The cam12/14 columns of these logs are projected with the stored
+    extrinsics of `cosilab_smpl_2min` and are not comparable between the fits.)
+
+**Conclusion (2026-11-19): keep the stored (board) extrinsics for cams 12 and 14.** With them, cams 12/14 cost the
+other cameras 0.1–2.1 px against the fit without them (cam04 even improves) and give the best floor. The remaining
+error at the cam04 end is in the 3D bodies, not in the calibration.
