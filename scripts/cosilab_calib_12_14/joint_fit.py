@@ -61,6 +61,11 @@ def main():
     ap.add_argument('pids', nargs='?', default=None, help='e.g. 2,11,12,14')
     ap.add_argument('--pids_json', default=None)
     ap.add_argument('--clips', nargs='*', default=None, help='batch:start ...')
+    ap.add_argument('--multi_root', default=f'{E}/cosilab_multiview_4cam', help='bodies (fit without this camera)')
+    ap.add_argument('--single_root', default=f'{E}/cosilab_smpl')
+    ap.add_argument('--det_dir', default=f'{E}/cosilab_vit003_extra')
+    ap.add_argument('--num_frames', type=int, default=600)
+    ap.add_argument('--every', type=int, default=10)
     o = ap.parse_args()
     cam, out_path = o.cam, o.out
     pids = [int(x) for x in o.pids.split(',')] if o.pids else None
@@ -68,8 +73,8 @@ def main():
     k = cosilab.load_camera(cosilab.DATA_ROOT, cam, use_refit=False)
     K, D = k['K'], k['D']
     Xb, ub = board_points(cam)
-    a = types.SimpleNamespace(multi_root=f'{E}/cosilab_multiview_4cam', single_root=f'{E}/cosilab_smpl', kp_conf=0.3,
-                              det_dir=f'{E}/cosilab_vit003_extra', neighbours=None, start=6000, num_frames=600, every=10,
+    a = types.SimpleNamespace(multi_root=o.multi_root, single_root=o.single_root, kp_conf=0.3,
+                              det_dir=o.det_dir, neighbours=None, start=6000, num_frames=o.num_frames, every=o.every,
                               all_people=False, occ_depth=0.3, max_occ=0.2, pids=pids,
                               pids_json=o.pids_json, clips=clips)
     data = Data(a, cam, 1)
